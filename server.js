@@ -37,7 +37,13 @@ console.log("[/e10] resolved dateText =", dateText);
 
 const parsed = parseDateText(dateText);
 console.log("[/e10] parsed =", parsed);
-
+const payload = {
+version: "2.0",
+template: { outputs: [{ simpleText: { text: `입력한 날짜: ${parsed.date_ymd}` } }] },
+action: { clientExtra: { parse_error: "NONE", date_ymd: parsed.date_ymd } }
+};
+console.log("[/e10] response payload =", JSON.stringify(payload));
+return res.status(200).json(payload);
 if (!parsed.ok) {
 return res.status(200).json({
 version: "2.0",
