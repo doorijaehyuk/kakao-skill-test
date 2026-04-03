@@ -113,7 +113,6 @@ date_ymd: ""
 * time_hhmm: HH:mm
 * hour24: 0~23
 * ========================================================= */
-
 app.post("/e20", (req, res) => {
 try {
 const body = req.body || {};
@@ -297,7 +296,7 @@ minute = 0;
 }
 
 if (hour === null) return { ok: false };
-  if (minute < 0 || minute > 59) return { ok: false };
+if (minute < 0 || minute > 59) return { ok: false };
 
 // 오전/오후 처리
 if (ampm === "AM") {
@@ -327,6 +326,4 @@ return target.getTime() < Date.now();
 function pad2(n) {
 return String(n).padStart(2, "0");
 }
-
-
 
