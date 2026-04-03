@@ -7,9 +7,7 @@ app.use(express.json({ limit: "1mb" }));
 app.get("/", (_, res) => res.send("kakao skill server is running"));
 app.get("/health", (_, res) => res.status(200).send("ok"));
 
-/**
-* 공통: 카카오 응답 헬퍼
-*/
+/** ===== 공통 응답 ===== */
 function replyText(text, clientExtra = {}) {
 return {
 version: "2.0",
@@ -18,9 +16,7 @@ action: { clientExtra }
 };
 }
 
-/**
-* 공통: 타임가드 (4.5초 전에 안전 응답)
-*/
+/** ===== 공통 타임아웃 가드 (카카오 5초 대응) ===== */
 function withTimeoutGuard(res, fallbackText = "요청 처리 중입니다. 잠시 후 다시 시도해 주세요.") {
 let sent = false;
 const timer = setTimeout(() => {
@@ -47,7 +43,7 @@ res.status(200).json(replyText(text, extra));
 }
 
 /** =========================================================
-* E10: 날짜 파싱 (초경량)
+* E10: 날짜 파싱
 * ========================================================= */
 app.post("/e10", (req, res) => {
 const safe = withTimeoutGuard(res);
@@ -73,7 +69,7 @@ const parsed = parseDateText(dateText);
 if (!parsed.ok) {
 return safe.send(
 replyText(
-"날짜를 다시 입력해주세요. (예: 오늘, 내일, 2026-05-28, 5월 28일, 0528, 528, 05.28)",
+"날짜를 다시 입력해주세요. (예: 오늘, 내일, 5월 28일, 2026-05-28, 0528, 528, 05.28)",
 { parse_error: "DATE_INVALID", date_ymd: "" }
 )
 );
@@ -94,7 +90,7 @@ date_ymd: ""
 });
 
 /** =========================================================
-* E20: 시간 파싱 (초경량)
+* E20: 시간 파싱
 * ========================================================= */
 app.post("/e20", (req, res) => {
 const safe = withTimeoutGuard(res);
@@ -161,6 +157,97 @@ hour24: ""
 }
 });
 
+/** =========================================================
+* ROUTER: 폴백 우회용 라우터
+* - 입력: utterance, stage (DATE | TIME)
+* ========================================================= */
+app.post("/router", (req, res) => {
+const safe = withTimeoutGuard(res);
+
+try {
+const body = req.body || {};
+const action = body.action || {};
+const params = action.params || {};
+const detailParams = action.detailParams || {};
+
+const utterance = String(
+body?.userRequest?.utterance ||
+params.utterance ||
+detailParams?.utterance?.origin ||
+""
+).trim();
+
+const stage = String(
+params.stage ||
+detailParams?.stage?.origin ||
+""
+).trim().toUpperCase();
+
+if (stage === "DATE") {
+const d = parseDateText(utterance);
+
+if (!d.ok) {
+return safe.send(
+replyText(
+"날짜를 다시 입력해주세요. (예: 오늘, 내일, 5월 28일, 0528)",
+{ parse_error: "DATE_INVALID", date_ymd: "", stage: "DATE" }
+)
+);
+}
+
+return safe.send(
+replyText(
+`입력하신 날짜는 ${formatKoreanDate(d.date_ymd)} 입니다.\n예약 시간을 말씀해주세요.\n(예:08, 9시, 14시 / 1시간 단위로 검색됩니다.)`,
+{ parse_error: "NONE", date_ymd: d.date_ymd, stage: "TIME" }
+)
+);
+}
+
+if (stage === "TIME") {
+const t = parseTimeText(utterance);
+
+if (!t.ok) {
+return safe.send(
+replyText(
+"시간을 다시 입력해 주세요. (예: 07, 7시, 오전 7시, 13:30)",
+{ parse_error: "TIME_INVALID", time_hhmm: "", hour24: "", stage: "TIME" }
+)
+);
+}
+
+if (!isInBusinessHours(t.hour, t.minute)) {
+return safe.send(
+replyText(
+"예약 가능 시간(05:00~14:59) 내로 입력해 주세요.",
+{ parse_error: "OUT_OF_RANGE", time_hhmm: "", hour24: "", stage: "TIME" }
+)
+);
+}
+
+const time_hhmm = `${pad2(t.hour)}:${pad2(t.minute)}`;
+const hour24 = String(t.hour);
+
+return safe.send(
+replyText(
+`예약 시간은 ${Number(hour24)}시 입니다. 예약 가능 시간 검색 하겠습니다.`,
+{ parse_error: "NONE", time_hhmm, hour24, stage: "NEXT" }
+)
+);
+}
+
+return safe.send(
+replyText("진행 단계 정보가 없습니다. 처음부터 다시 진행해 주세요.", {
+parse_error: "STAGE_INVALID",
+stage: "DATE"
+})
+);
+} catch (e) {
+return safe.fail("요청 처리 중 오류가 발생했습니다.", {
+parse_error: "ERROR"
+});
+}
+});
+
 /** ===== 서버 시작 ===== */
 const port = process.env.PORT || 3000;
 app.listen(port, () => {
@@ -177,25 +264,31 @@ const t = String(text).trim().replace(/\s+/g, " ").replace(/\.$/, "");
 
 if (t === "오늘") return { ok: true, date_ymd: formatYmd(now) };
 if (t === "내일") {
-const d = new Date(now); d.setDate(d.getDate() + 1);
+const d = new Date(now);
+d.setDate(d.getDate() + 1);
 return { ok: true, date_ymd: formatYmd(d) };
 }
 if (t === "모레") {
-const d = new Date(now); d.setDate(d.getDate() + 2);
+const d = new Date(now);
+d.setDate(d.getDate() + 2);
 return { ok: true, date_ymd: formatYmd(d) };
 }
 
 let m;
+
+// YYYY-MM-DD / YYYY.MM.DD / YYYY/MM/DD
 m = t.match(/^(\d{4})[./-](\d{1,2})[./-](\d{1,2})$/);
 if (m) return validYmd(+m[1], +m[2], +m[3]);
 
+// M월 D일
 m = t.match(/^(\d{1,2})\s*월\s*(\d{1,2})\s*일$/);
 if (m) return validYmd(currentYear, +m[1], +m[2]);
 
+// M/D, M-D, M.D
 m = t.match(/^(\d{1,2})[./-](\d{1,2})$/);
 if (m) return validYmd(currentYear, +m[1], +m[2]);
 
-// 3~4자리 숫자 날짜 (528, 0528, 1225)
+// 숫자만 추출해 MMDD 처리 (528, 0528, "0528로" 같은 변형도 일부 대응)
 const digitsOnly = t.replace(/\D/g, "");
 if (digitsOnly.length === 3 || digitsOnly.length === 4) {
 const month = Number(digitsOnly.slice(0, digitsOnly.length - 2));
@@ -246,7 +339,7 @@ if (m) {
 hour = +m[1];
 minute = m[2] ? +m[2] : 0;
 } else {
-m = text.match(/^(\d{1,2})$/);
+m = text.match(/^(\d{1,2})$/); // 7, 07
 if (m) {
 hour = +m[1];
 minute = 0;
@@ -284,4 +377,5 @@ return target.getTime() < Date.now();
 function pad2(n) {
 return String(n).padStart(2, "0");
 }
+
 
