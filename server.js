@@ -51,7 +51,7 @@ template: {
 outputs: [
 {
 simpleText: {
-text: "날짜를 다시 입력해주세요. (예: 오늘, 내일, 2026-05-28, 5월 28일, 0528, 05.28)"
+text: "날짜를 다시 입력해주세요. (예: 오늘, 내일, 2026-05-28, 5월 28일, 0528, 528, 05.28)"
 }
 }
 ]
@@ -212,7 +212,9 @@ if (!text) return { ok: false };
 
 const now = new Date();
 const currentYear = now.getFullYear();
-const t = String(text).trim().replace(/\s+/g, " ");
+
+// 공백/끝점 정리
+const t = String(text).trim().replace(/\s+/g, " ").replace(/\.$/, "");
 
 // 상대 날짜
 if (t === "오늘") return { ok: true, date_ymd: formatYmd(now) };
@@ -241,9 +243,14 @@ if (m) return validYmd(currentYear, +m[1], +m[2]);
 m = t.match(/^(\d{1,2})[./-](\d{1,2})$/);
 if (m) return validYmd(currentYear, +m[1], +m[2]);
 
-// MMDD (예: 0528)
-m = t.match(/^(\d{2})(\d{2})$/);
-if (m) return validYmd(currentYear, +m[1], +m[2]);
+// 3~4자리 숫자 날짜 (예: 528, 0528, 1225)
+m = t.match(/^(\d{3,4})$/);
+if (m) {
+const digits = m[1];
+const month = Number(digits.slice(0, digits.length - 2));
+const day = Number(digits.slice(-2));
+return validYmd(currentYear, month, day);
+}
 
 return { ok: false };
 }
@@ -287,8 +294,7 @@ minute = +m[2];
 m = text.match(/^(\d{1,2})\s*시\s*(\d{1,2})?\s*분?$/);
 if (m) {
 hour = +m[1];
-minute = m[2] ?
- +m[2] : 0;
+minute = m[2] ? +m[2] : 0;
 } else {
 // HH (예: 07, 7)
 m = text.match(/^(\d{1,2})$/);
@@ -304,9 +310,9 @@ if (minute < 0 || minute > 59) return { ok: false };
 
 // 오전/오후 처리
 if (ampm === "AM") {
-if (hour === 12) hour = 0; // 오전 12시
+if (hour === 12) hour = 0;
 } else if (ampm === "PM") {
-if (hour >= 1 && hour <= 11) hour += 12; // 오후 1~11시
+if (hour >= 1 && hour <= 11) hour += 12;
 }
 
 if (hour < 0 || hour > 23) return { ok: false };
@@ -330,3 +336,4 @@ return target.getTime() < Date.now();
 function pad2(n) {
 return String(n).padStart(2, "0");
 }
+
