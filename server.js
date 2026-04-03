@@ -19,13 +19,9 @@ const params = action.params || {};
 const detailParams = action.detailParams || {};
 const utterance = String(body?.userRequest?.utterance || "").trim();
 
-// ✅ date_text 추출 우선순위:
-// 1) action.params.date_text
-// 2) action.detailParams.date_text.origin
-// 3) action.detailParams.await_date.origin (블록 파라미터명이 await_date인 경우)
-// 4) userRequest.utterance
+// ✅ 현재 턴 발화 우선 + 컨텍스트 파라미터 fallback
 const dateText = String(
-body?.userRequest?.utterance ?? // ✅ 현재 턴 사용자 입력 최우선
+body?.userRequest?.utterance ??
 params.await_date ??
 detailParams?.await_date?.origin ??
 params.date_text ??
@@ -33,14 +29,14 @@ detailParams?.date_text?.origin ??
 ""
 ).trim();
 
-
-// 디버깅 로그 (Render 로그에서 확인)
+// 디버그 로그
 console.log("[/e10] params =", params);
 console.log("[/e10] detailParams =", detailParams);
 console.log("[/e10] utterance =", utterance);
 console.log("[/e10] resolved dateText =", dateText);
 
 const parsed = parseDateText(dateText);
+console.log("[/e10] parsed =", parsed);
 
 if (!parsed.ok) {
 return res.status(200).json({
@@ -83,6 +79,7 @@ date_ymd: parsed.date_ymd
 });
 } catch (error) {
 console.error("[/e10] error =", error);
+
 return res.status(200).json({
 version: "2.0",
 template: {
@@ -109,45 +106,41 @@ app.listen(port, () => {
 console.log(`server listening on port ${port}`);
 });
 
-/* ---------- 날짜 파싱 ---------- */
+/* ---------------- 날짜 파싱 ---------------- */
+
 function parseDateText(text) {
 if (!text) return { ok: false };
 
 const now = new Date();
 const currentYear = now.getFullYear();
 
-const normalized = text.replace(/\s+/g, " ").trim();
+const t = String(text).trim().replace(/\s+/g, " ");
 
-if (normalized === "오늘") {
-return { ok: true, date_ymd: formatYmd(now) };
-}
-
-if (normalized === "내일") {
+// 상대 날짜
+if (t === "오늘") return { ok: true, date_ymd: formatYmd(now) };
+if (t === "내일") {
 const d = new Date(now);
 d.setDate(d.getDate() + 1);
 return { ok: true, date_ymd: formatYmd(d) };
 }
-
-if (normalized === "모레") {
+if (t === "모레") {
 const d = new Date(now);
 d.setDate(d.getDate() + 2);
 return { ok: true, date_ymd: formatYmd(d) };
 }
 
-// YYYY-MM-DD
-let m = normalized.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+let m;
+
+// YYYY-MM-DD / YYYY.MM.DD / YYYY/MM/DD
+m = t.match(/^(\d{4})[./-](\d{1,2})[./-](\d{1,2})$/);
 if (m) return validYmd(+m[1], +m[2], +m[3]);
 
-// YYYY/MM/DD
-m = normalized.match(/^(\d{4})\/(\d{1,2})\/(\d{1,2})$/);
-if (m) return validYmd(+m[1], +m[2], +m[3]);
-
-// MM월 DD일 / 5월28일 / 05월 28일
-m = normalized.match(/^(\d{1,2})\s*월\s*(\d{1,2})\s*일$/);
+// M월 D일 (공백 유무 모두 허용)
+m = t.match(/^(\d{1,2})\s*월\s*(\d{1,2})\s*일$/);
 if (m) return validYmd(currentYear, +m[1], +m[2]);
 
-// M/D
-m = normalized.match(/^(\d{1,2})\/(\d{1,2})$/);
+// M/D, M-D, M.D
+m = t.match(/^(\d{1,2})[./-](\d{1,2})$/);
 if (m) return validYmd(currentYear, +m[1], +m[2]);
 
 return { ok: false };
