@@ -25,12 +25,14 @@ const utterance = String(body?.userRequest?.utterance || "").trim();
 // 3) action.detailParams.await_date.origin (블록 파라미터명이 await_date인 경우)
 // 4) userRequest.utterance
 const dateText = String(
+body?.userRequest?.utterance ?? // ✅ 현재 턴 사용자 입력 최우선
+params.await_date ??
+detailParams?.await_date?.origin ??
 params.date_text ??
 detailParams?.date_text?.origin ??
-detailParams?.await_date?.origin ??
-utterance ??
 ""
 ).trim();
+
 
 // 디버깅 로그 (Render 로그에서 확인)
 console.log("[/e10] params =", params);
