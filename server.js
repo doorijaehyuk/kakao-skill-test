@@ -3,6 +3,8 @@ import express from "express";
 const app = express();
 app.use(express.json({ limit: "1mb" }));
 
+const TZ_OFFSET_MS = 9 * 60 * 60 * 1000; // KST
+
 /** ===== 기본 ===== */
 app.get("/", (_, res) => res.send("kakao skill server is running"));
 app.get("/health", (_, res) => res.status(200).send("ok"));
@@ -55,12 +57,13 @@ const params = action.params || {};
 const detailParams = action.detailParams || {};
 const utterance = String(body?.userRequest?.utterance || "").trim();
 
+// ✅ 파라미터 우선, utterance fallback
 const dateText = String(
-utterance ||
 params.await_date ||
 detailParams?.await_date?.origin ||
 params.date_text ||
 detailParams?.date_text?.origin ||
+utterance ||
 ""
 ).trim();
 
@@ -102,10 +105,11 @@ const params = action.params || {};
 const detailParams = action.detailParams || {};
 const utterance = String(body?.userRequest?.utterance || "").trim();
 
+// ✅ 파라미터 우선, utterance fallback
 const hourText = String(
-utterance ||
 params.hour_text ||
 detailParams?.hour_text?.origin ||
+utterance ||
 ""
 ).trim();
 
@@ -125,7 +129,7 @@ if (!t.ok) {
 parse_error = "TIME_INVALID";
 } else if (!isInBusinessHours(t.hour, t.minute)) {
 parse_error = "OUT_OF_RANGE";
-} else if (dateYmd && isPastDateTime(dateYmd, t.hour, t.minute)) {
+} else if (dateYmd && isPastDateTimeKST(dateYmd, t.hour, t.minute)) {
 parse_error = "PAST_TIME";
 } else {
 time_hhmm = `${pad2(t.hour)}:${pad2(t.minute)}`;
@@ -158,7 +162,8 @@ hour24: ""
 });
 
 /** =========================================================
-* ROUTER: 폴백 우회용 라우터
+*
+ROUTER: 폴백 우회용 라우터
 * - 입력: utterance, stage (DATE | TIME)
 * ========================================================= */
 app.post("/router", (req, res) => {
@@ -177,11 +182,22 @@ detailParams?.utterance?.origin ||
 ""
 ).trim();
 
-const stage = String(
+const dateYmdHint = String(
+params.date_ymd ||
+detailParams?.date_ymd?.origin ||
+""
+).trim();
+
+// ✅ stage 기본 추론 추가
+let stage = String(
 params.stage ||
 detailParams?.stage?.origin ||
 ""
 ).trim().toUpperCase();
+
+if (!stage) {
+stage = dateYmdHint ? "TIME" : "DATE";
+}
 
 if (stage === "DATE") {
 const d = parseDateText(utterance);
@@ -224,6 +240,16 @@ replyText(
 );
 }
 
+// dateYmdHint가 있으면 과거시간도 체크
+if (dateYmdHint && isPastDateTimeKST(dateYmdHint, t.hour, t.minute)) {
+return safe.send(
+replyText(
+"이미 지난 시간이에요. 다시 입력해 주세요.",
+{ parse_error: "PAST_TIME", time_hhmm: "", hour24: "", stage: "TIME" }
+)
+);
+}
+
 const time_hhmm = `${pad2(t.hour)}:${pad2(t.minute)}`;
 const hour24 = String(t.hour);
 
@@ -259,20 +285,12 @@ function parseDateText(text) {
 if (!text) return { ok: false };
 
 const now = new Date();
-const currentYear = now.getFullYear();
+const currentYear = now.getUTCFullYear(); // KST 환산은 format 시 처리
 const t = String(text).trim().replace(/\s+/g, " ").replace(/\.$/, "");
 
-if (t === "오늘") return { ok: true, date_ymd: formatYmd(now) };
-if (t === "내일") {
-const d = new Date(now);
-d.setDate(d.getDate() + 1);
-return { ok: true, date_ymd: formatYmd(d) };
-}
-if (t === "모레") {
-const d = new Date(now);
-d.setDate(d.getDate() + 2);
-return { ok: true, date_ymd: formatYmd(d) };
-}
+if (t === "오늘") return { ok: true, date_ymd: formatYmdKST(new Date()) };
+if (t === "내일") return { ok: true, date_ymd: formatYmdKST(addDaysKST(new Date(), 1)) };
+if (t === "모레") return { ok: true, date_ymd: formatYmdKST(addDaysKST(new Date(), 2)) };
 
 let m;
 
@@ -288,7 +306,7 @@ if (m) return validYmd(currentYear, +m[1], +m[2]);
 m = t.match(/^(\d{1,2})[./-](\d{1,2})$/);
 if (m) return validYmd(currentYear, +m[1], +m[2]);
 
-// 숫자만 추출해 MMDD 처리 (528, 0528, "0528로" 같은 변형도 일부 대응)
+// 숫자만 추출해 MMDD 처리 (528, 0528)
 const digitsOnly = t.replace(/\D/g, "");
 if (digitsOnly.length === 3 || digitsOnly.length === 4) {
 const month = Number(digitsOnly.slice(0, digitsOnly.length - 2));
@@ -300,19 +318,29 @@ return { ok: false };
 }
 
 function validYmd(y, m, d) {
-const dt = new Date(y, m - 1, d);
-const ok = dt.getFullYear() === y && dt.getMonth() + 1 === m && dt.getDate() === d;
+const dt = new Date(Date.UTC(y, m - 1, d));
+const ok = dt.getUTCFullYear() === y && dt.getUTCMonth() + 1 === m && dt.getUTCDate() === d;
 if (!ok) return { ok: false };
 return { ok: true, date_ymd: `${y}-${pad2(m)}-${pad2(d)}` };
-}
-
-function formatYmd(d) {
-return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 }
 
 function formatKoreanDate(ymd) {
 const [y, m, d] = String(ymd).split("-");
 return `${y}년 ${m}월 ${d}일`;
+}
+
+function formatYmdKST(dateObj) {
+const kst = new Date(dateObj.getTime() + TZ_OFFSET_MS);
+const y = kst.getUTCFullYear();
+const m = kst.getUTCMonth() + 1;
+const d = kst.getUTCDate();
+return `${y}-${pad2(m)}-${pad2(d)}`;
+}
+
+function addDaysKST(dateObj, days) {
+const kst = new Date(dateObj.getTime() + TZ_OFFSET_MS);
+kst.setUTCDate(kst.getUTCDate() + days);
+return new Date(kst.getTime() - TZ_OFFSET_MS);
 }
 
 /** ===== 유틸: 시간 ===== */
@@ -367,11 +395,17 @@ if (hour > 14) return false;
 return true;
 }
 
-function isPastDateTime(dateYmd, hour, minute) {
+function isPastDateTimeKST(dateYmd, hour, minute) {
 const [y, m, d] = String(dateYmd).split("-").map(Number);
 if (!y || !m || !d) return false;
-const target = new Date(y, m - 1, d, hour, minute, 0, 0);
-return target.getTime() < Date.now();
+
+// target KST -> UTC ms
+const targetUtcMs = Date.UTC(y, m - 1, d, hour - 9, minute, 0, 0);
+
+// now KST 기준 UTC ms
+const nowUtcMs = Date.now();
+
+return targetUtcMs < nowUtcMs;
 }
 
 function pad2(n) {
