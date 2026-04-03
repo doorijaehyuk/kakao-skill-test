@@ -158,7 +158,7 @@ hour24 = String(t.hour);
 
 const text =
 parse_error === "NONE"
-? `입력한 시간: ${time_hhmm}`
+? `입력하신 시간은 ${time_hhmm} 입니다. 예약 가능 시간을 확인하겠습니다.`
 : parse_error === "OUT_OF_RANGE"
 ? "예약 가능 시간(05:00~14:59) 내로 입력해 주세요."
 : parse_error === "PAST_TIME"
