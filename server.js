@@ -173,3 +173,83 @@ const m = String(d.getMonth() + 1).padStart(2, "0");
 const day = String(d.getDate()).padStart(2, "0");
 return `${y}-${m}-${day}`;
 }
+app.post("/e20", (req, res) => {
+try {
+const body = req.body || {};
+const action = body.action || {};
+const params = action.params || {};
+const detailParams = action.detailParams || {};
+
+const utterance = String(body?.userRequest?.utterance || "").trim();
+
+const hourText = String(
+utterance ??
+params.hour_text ??
+detailParams?.hour_text?.origin ??
+""
+).trim();
+
+const dateYmd = String(
+params.date_ymd ??
+detailParams?.date_ymd?.origin ??
+""
+).trim();
+
+const t = parseTimeText(hourText);
+
+let parse_error = "NONE";
+let time_hhmm = "";
+let hour24 = "";
+
+if (!t.ok) {
+parse_error = "TIME_INVALID";
+} else if (!isInBusinessHours(t.hour, t.minute)) {
+parse_error = "OUT_OF_RANGE";
+} else if (dateYmd && isPastDateTime(dateYmd, t.hour, t.minute)) {
+parse_error = "PAST_TIME";
+} else {
+time_hhmm = `${pad2(t.hour)}:${pad2(t.minute)}`;
+hour24 = String(t.hour);
+}
+
+const payload = {
+version: "2.0",
+template: {
+outputs: [
+{
+simpleText: {
+text:
+parse_error === "NONE"
+? `입력한 시간: ${time_hhmm}`
+: parse_error === "OUT_OF_RANGE"
+? "예약 가능 시간(09:00~21:00) 내로 입력해 주세요."
+: parse_error === "PAST_TIME"
+? "이미 지난 시간이에요. 다시 입력해 주세요."
+: "시간을 다시 입력해 주세요. (예: 오전 7시, 19시, 7:30)"
+}
+}
+]
+},
+action: {
+clientExtra: {
+parse_error,
+time_hhmm,
+hour24
+}
+}
+};
+
+console.log("[/e20] hourText =", hourText);
+console.log("[/e20] dateYmd =", dateYmd);
+console.log("[/e20] result =", payload.action.clientExtra);
+
+return res.status(200).json(payload);
+} catch (e) {
+console.error("[/e20] error =", e);
+return res.status(200).json({
+version: "2.0",
+template: { outputs: [{ simpleText: { text: "시간 처리 중 오류가 발생했습니다." } }] },
+action: { clientExtra: { parse_error: "TIME_INVALID", time_hhmm: "", hour24: "" } }
+});
+}
+});
