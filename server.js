@@ -39,7 +39,7 @@ const parsed = parseDateText(dateText);
 console.log("[/e10] parsed =", parsed);
 const payload = {
 version: "2.0",
-template: { outputs: [{ simpleText: { text: `입력한 날짜: ${parsed.date_ymd}` } }] },
+template: { outputs: [{ simpleText: { text: `입력한 날짜는 ${parsed.date_ymd}입니다. 원하시는 시간대를 말씀해주세요(예:7,7시,7시대)` } }] },
 action: { clientExtra: { parse_error: "NONE", date_ymd: parsed.date_ymd } }
 };
 console.log("[/e10] response payload =", JSON.stringify(payload));
