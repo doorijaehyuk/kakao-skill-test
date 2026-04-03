@@ -27,7 +27,6 @@ const params = action.params || {};
 const detailParams = action.detailParams || {};
 const utterance = String(body?.userRequest?.utterance || "").trim();
 
-// 현재 턴 발화 우선
 const dateText = String(
 utterance ??
 params.await_date ??
@@ -161,10 +160,10 @@ const text =
 parse_error === "NONE"
 ? `입력한 시간: ${time_hhmm}`
 : parse_error === "OUT_OF_RANGE"
-? "예약 가능 시간(09:00~21:00) 내로 입력해 주세요."
+? "예약 가능 시간(05:00~14:59) 내로 입력해 주세요."
 : parse_error === "PAST_TIME"
 ? "이미 지난 시간이에요. 다시 입력해 주세요."
-: "시간을 다시 입력해 주세요. (예: 오전 7시, 19시, 7:30)";
+: "시간을 다시 입력해 주세요. (예: 오전 7시, 13시, 7:30)";
 
 const payload = {
 version: "2.0",
@@ -215,7 +214,6 @@ const now = new Date();
 const currentYear = now.getFullYear();
 const t = String(text).trim().replace(/\s+/g, " ");
 
-// 상대 날짜
 if (t === "오늘") return { ok: true, date_ymd: formatYmd(now) };
 if (t === "내일") {
 const d = new Date(now);
@@ -310,9 +308,9 @@ return { ok: true, hour, minute };
 }
 
 function isInBusinessHours(hour, minute) {
-// 09:00~21:59 허용
-if (hour < 9) return false;
-if (hour > 21) return false;
+// 05:00 ~ 14:59 허용
+if (hour < 5) return false;
+if (hour > 14) return false;
 return true;
 }
 
