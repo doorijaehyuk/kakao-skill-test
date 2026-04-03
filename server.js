@@ -51,7 +51,7 @@ template: {
 outputs: [
 {
 simpleText: {
-text: "날짜를 다시 입력해주세요. (예: 오늘, 내일, 2026-05-28, 5월 28일)"
+text: "날짜를 다시 입력해주세요. (예: 오늘, 내일, 2026-05-28, 5월 28일, 0528, 05.28)"
 }
 }
 ]
@@ -73,7 +73,7 @@ template: {
 outputs: [
 {
 simpleText: {
-text: `입력신 날짜는 ${parsed.date_ymd} 입니다. 예약하실 시간대를 말씀해주세요.(예: 오전 7시, 10시, 14시) 1시간 단위로 검색됩니다.`
+text: `입력한 날짜: ${parsed.date_ymd}`
 }
 }
 ]
@@ -158,12 +158,12 @@ hour24 = String(t.hour);
 
 const text =
 parse_error === "NONE"
-? `입력하신 시간은 ${time_hhmm} 입니다. 예약 가능 시간을 확인하겠습니다.`
+? `입력한 시간: ${time_hhmm}`
 : parse_error === "OUT_OF_RANGE"
 ? "예약 가능 시간(05:00~14:59) 내로 입력해 주세요."
 : parse_error === "PAST_TIME"
 ? "이미 지난 시간이에요. 다시 입력해 주세요."
-: "시간을 다시 입력해 주세요. (예: 오전 7시, 10시, 14시)";
+: "시간을 다시 입력해 주세요. (예: 07, 7시, 오전 7시, 13:30)";
 
 const payload = {
 version: "2.0",
@@ -214,6 +214,7 @@ const now = new Date();
 const currentYear = now.getFullYear();
 const t = String(text).trim().replace(/\s+/g, " ");
 
+// 상대 날짜
 if (t === "오늘") return { ok: true, date_ymd: formatYmd(now) };
 if (t === "내일") {
 const d = new Date(now);
@@ -238,6 +239,10 @@ if (m) return validYmd(currentYear, +m[1], +m[2]);
 
 // M/D, M-D, M.D
 m = t.match(/^(\d{1,2})[./-](\d{1,2})$/);
+if (m) return validYmd(currentYear, +m[1], +m[2]);
+
+// MMDD (예: 0528)
+m = t.match(/^(\d{2})(\d{2})$/);
 if (m) return validYmd(currentYear, +m[1], +m[2]);
 
 return { ok: false };
@@ -282,9 +287,10 @@ minute = +m[2];
 m = text.match(/^(\d{1,2})\s*시\s*(\d{1,2})?\s*분?$/);
 if (m) {
 hour = +m[1];
-minute = m[2] ? +m[2] : 0;
+minute = m[2] ?
+ +m[2] : 0;
 } else {
-// HH
+// HH (예: 07, 7)
 m = text.match(/^(\d{1,2})$/);
 if (m) {
 hour = +m[1];
@@ -324,4 +330,3 @@ return target.getTime() < Date.now();
 function pad2(n) {
 return String(n).padStart(2, "0");
 }
-
