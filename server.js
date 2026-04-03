@@ -3,6 +3,7 @@ import express from "express";
 const app = express();
 app.use(express.json());
 
+/** ===== 기본 ===== */
 app.get("/", (req, res) => {
 res.send("kakao skill server is running");
 });
@@ -11,6 +12,13 @@ app.get("/health", (req, res) => {
 res.status(200).send("ok");
 });
 
+/** =========================================================
+* E10: 날짜 파싱
+* - 입력: date_text (또는 utterance fallback)
+* - 출력(clientExtra):
+* parse_error: NONE | DATE_INVALID
+* date_ymd: YYYY-MM-DD
+* ========================================================= */
 app.post("/e10", (req, res) => {
 try {
 const body = req.body || {};
@@ -19,9 +27,9 @@ const params = action.params || {};
 const detailParams = action.detailParams || {};
 const utterance = String(body?.userRequest?.utterance || "").trim();
 
-// ✅ 현재 턴 발화 우선 + 컨텍스트 파라미터 fallback
+// 현재 턴 발화 우선
 const dateText = String(
-body?.userRequest?.utterance ??
+utterance ??
 params.await_date ??
 detailParams?.await_date?.origin ??
 params.date_text ??
@@ -29,7 +37,6 @@ detailParams?.date_text?.origin ??
 ""
 ).trim();
 
-// 디버그 로그
 console.log("[/e10] params =", params);
 console.log("[/e10] detailParams =", detailParams);
 console.log("[/e10] utterance =", utterance);
@@ -37,15 +44,9 @@ console.log("[/e10] resolved dateText =", dateText);
 
 const parsed = parseDateText(dateText);
 console.log("[/e10] parsed =", parsed);
-const payload = {
-version: "2.0",
-template: { outputs: [{ simpleText: { text: `입력한 날짜는 ${parsed.date_ymd}입니다. 원하시는 시간대를 말씀해주세요(예:7,7시,7시대)` } }] },
-action: { clientExtra: { parse_error: "NONE", date_ymd: parsed.date_ymd } }
-};
-console.log("[/e10] response payload =", JSON.stringify(payload));
-return res.status(200).json(payload);
+
 if (!parsed.ok) {
-return res.status(200).json({
+const payload = {
 version: "2.0",
 template: {
 outputs: [
@@ -62,10 +63,12 @@ parse_error: "DATE_INVALID",
 date_ymd: ""
 }
 }
-});
+};
+console.log("[/e10] response payload =", JSON.stringify(payload));
+return res.status(200).json(payload);
 }
 
-return res.status(200).json({
+const payload = {
 version: "2.0",
 template: {
 outputs: [
@@ -82,20 +85,15 @@ parse_error: "NONE",
 date_ymd: parsed.date_ymd
 }
 }
-});
+};
+console.log("[/e10] response payload =", JSON.stringify(payload));
+return res.status(200).json(payload);
 } catch (error) {
 console.error("[/e10] error =", error);
-
 return res.status(200).json({
 version: "2.0",
 template: {
-outputs: [
-{
-simpleText: {
-text: "서버 처리 중 오류가 발생했습니다."
-}
-}
-]
+outputs: [{ simpleText: { text: "서버 처리 중 오류가 발생했습니다." } }]
 },
 action: {
 clientExtra: {
@@ -107,19 +105,115 @@ date_ymd: ""
 }
 });
 
+/** =========================================================
+* E20: 시간 파싱
+* - 입력: hour_text, date_ymd(선택)
+* - 출력(clientExtra):
+* parse_error: NONE | TIME_INVALID | OUT_OF_RANGE | PAST_TIME
+* time_hhmm: HH:mm
+* hour24: 0~23
+* ========================================================= */
+
+app.post("/e20", (req, res) => {
+try {
+const body = req.body || {};
+const action = body.action || {};
+const params = action.params || {};
+const detailParams = action.detailParams || {};
+const utterance = String(body?.userRequest?.utterance || "").trim();
+
+const hourText = String(
+utterance ??
+params.hour_text ??
+detailParams?.hour_text?.origin ??
+""
+).trim();
+
+const dateYmd = String(
+params.date_ymd ??
+detailParams?.date_ymd?.origin ??
+""
+).trim();
+
+console.log("[/e20] params =", params);
+console.log("[/e20] detailParams =", detailParams);
+console.log("[/e20] utterance =", utterance);
+console.log("[/e20] resolved hourText =", hourText);
+console.log("[/e20] resolved dateYmd =", dateYmd);
+
+const t = parseTimeText(hourText);
+
+let parse_error = "NONE";
+let time_hhmm = "";
+let hour24 = "";
+
+if (!t.ok) {
+parse_error = "TIME_INVALID";
+} else if (!isInBusinessHours(t.hour, t.minute)) {
+parse_error = "OUT_OF_RANGE";
+} else if (dateYmd && isPastDateTime(dateYmd, t.hour, t.minute)) {
+parse_error = "PAST_TIME";
+} else {
+time_hhmm = `${pad2(t.hour)}:${pad2(t.minute)}`;
+hour24 = String(t.hour);
+}
+
+const text =
+parse_error === "NONE"
+? `입력한 시간: ${time_hhmm}`
+: parse_error === "OUT_OF_RANGE"
+? "예약 가능 시간(09:00~21:00) 내로 입력해 주세요."
+: parse_error === "PAST_TIME"
+? "이미 지난 시간이에요. 다시 입력해 주세요."
+: "시간을 다시 입력해 주세요. (예: 오전 7시, 19시, 7:30)";
+
+const payload = {
+version: "2.0",
+template: {
+outputs: [{ simpleText: { text } }]
+},
+action: {
+clientExtra: {
+parse_error,
+time_hhmm,
+hour24
+}
+}
+};
+
+console.log("[/e20] result =", payload.action.clientExtra);
+console.log("[/e20] response payload =", JSON.stringify(payload));
+return res.status(200).json(payload);
+} catch (error) {
+console.error("[/e20] error =", error);
+return res.status(200).json({
+version: "2.0",
+template: {
+outputs: [{ simpleText: { text: "시간 처리 중 오류가 발생했습니다." } }]
+},
+action: {
+clientExtra: {
+parse_error: "TIME_INVALID",
+time_hhmm: "",
+hour24: ""
+}
+}
+});
+}
+});
+
+/** ===== 서버 시작 ===== */
 const port = process.env.PORT || 3000;
 app.listen(port, () => {
 console.log(`server listening on port ${port}`);
 });
 
-/* ---------------- 날짜 파싱 ---------------- */
-
+/** ===== 유틸: 날짜 ===== */
 function parseDateText(text) {
 if (!text) return { ok: false };
 
 const now = new Date();
 const currentYear = now.getFullYear();
-
 const t = String(text).trim().replace(/\s+/g, " ");
 
 // 상대 날짜
@@ -141,7 +235,7 @@ let m;
 m = t.match(/^(\d{4})[./-](\d{1,2})[./-](\d{1,2})$/);
 if (m) return validYmd(+m[1], +m[2], +m[3]);
 
-// M월 D일 (공백 유무 모두 허용)
+// M월 D일
 m = t.match(/^(\d{1,2})\s*월\s*(\d{1,2})\s*일$/);
 if (m) return validYmd(currentYear, +m[1], +m[2]);
 
@@ -160,96 +254,79 @@ dt.getMonth() + 1 === m &&
 dt.getDate() === d;
 
 if (!ok) return { ok: false };
-
-return {
-ok: true,
-date_ymd: `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`
-};
+return { ok: true, date_ymd: `${y}-${pad2(m)}-${pad2(d)}` };
 }
 
 function formatYmd(d) {
-const y = d.getFullYear();
-const m = String(d.getMonth() + 1).padStart(2, "0");
-const day = String(d.getDate()).padStart(2, "0");
-return `${y}-${m}-${day}`;
+return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 }
-app.post("/e20", (req, res) => {
-try {
-const body = req.body || {};
-const action = body.action || {};
-const params = action.params || {};
-const detailParams = action.detailParams || {};
 
-const utterance = String(body?.userRequest?.utterance || "").trim();
+/** ===== 유틸: 시간 ===== */
+function parseTimeText(raw) {
+if (!raw) return { ok: false };
 
-const hourText = String(
-utterance ??
-params.hour_text ??
-detailParams?.hour_text?.origin ??
-""
-).trim();
+let text = String(raw).replace(/\s+/g, " ").trim();
+let ampm = null;
 
-const dateYmd = String(
-params.date_ymd ??
-detailParams?.date_ymd?.origin ??
-""
-).trim();
+if (/오전/.test(text)) ampm = "AM";
+if (/오후/.test(text)) ampm = "PM";
+text = text.replace(/오전|오후/g, "").trim();
 
-const t = parseTimeText(hourText);
+let hour = null;
+let minute = 0;
 
-let parse_error = "NONE";
-let time_hhmm = "";
-let hour24 = "";
-
-if (!t.ok) {
-parse_error = "TIME_INVALID";
-} else if (!isInBusinessHours(t.hour, t.minute)) {
-parse_error = "OUT_OF_RANGE";
-} else if (dateYmd && isPastDateTime(dateYmd, t.hour, t.minute)) {
-parse_error = "PAST_TIME";
+// HH:MM
+let m = text.match(/^(\d{1,2})\s*:\s*(\d{1,2})$/);
+if (m) {
+hour = +m[1];
+minute = +m[2];
 } else {
-time_hhmm = `${pad2(t.hour)}:${pad2(t.minute)}`;
-hour24 = String(t.hour);
+// HH시, HH시MM분
+m = text.match(/^(\d{1,2})\s*시\s*(\d{1,2})?\s*분?$/);
+if (m) {
+hour = +m[1];
+minute = m[2] ? +m[2] : 0;
+} else {
+// HH
+m = text.match(/^(\d{1,2})$/);
+if (m) {
+hour = +m[1];
+minute = 0;
+}
+}
 }
 
-const payload = {
-version: "2.0",
-template: {
-outputs: [
-{
-simpleText: {
-text:
-parse_error === "NONE"
-? `입력한 시간: ${time_hhmm}`
-: parse_error === "OUT_OF_RANGE"
-? "예약 가능 시간(09:00~21:00) 내로 입력해 주세요."
-: parse_error === "PAST_TIME"
-? "이미 지난 시간이에요. 다시 입력해 주세요."
-: "시간을 다시 입력해 주세요. (예: 오전 7시, 19시, 7:30)"
-}
-}
-]
-},
-action: {
-clientExtra: {
-parse_error,
-time_hhmm,
-hour24
-}
-}
-};
+if (hour === null) return { ok: false };
+  if (minute < 0 || minute > 59) return { ok: false };
 
-console.log("[/e20] hourText =", hourText);
-console.log("[/e20] dateYmd =", dateYmd);
-console.log("[/e20] result =", payload.action.clientExtra);
-
-return res.status(200).json(payload);
-} catch (e) {
-console.error("[/e20] error =", e);
-return res.status(200).json({
-version: "2.0",
-template: { outputs: [{ simpleText: { text: "시간 처리 중 오류가 발생했습니다." } }] },
-action: { clientExtra: { parse_error: "TIME_INVALID", time_hhmm: "", hour24: "" } }
-});
+// 오전/오후 처리
+if (ampm === "AM") {
+if (hour === 12) hour = 0; // 오전 12시
+} else if (ampm === "PM") {
+if (hour >= 1 && hour <= 11) hour += 12; // 오후 1~11시
 }
-});
+
+if (hour < 0 || hour > 23) return { ok: false };
+return { ok: true, hour, minute };
+}
+
+function isInBusinessHours(hour, minute) {
+// 09:00~21:59 허용
+if (hour < 9) return false;
+if (hour > 21) return false;
+return true;
+}
+
+function isPastDateTime(dateYmd, hour, minute) {
+const [y, m, d] = String(dateYmd).split("-").map(Number);
+if (!y || !m || !d) return false;
+const target = new Date(y, m - 1, d, hour, minute, 0, 0);
+return target.getTime() < Date.now();
+}
+
+function pad2(n) {
+return String(n).padStart(2, "0");
+}
+
+
+
