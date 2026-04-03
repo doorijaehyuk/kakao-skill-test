@@ -272,6 +272,10 @@ function formatYmd(d) {
 return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 }
 
+function formatKoreanDate(ymd) {
+const [y, m, d] = String(ymd).split("-");
+return `${y}년 ${m}월 ${d}일`;
+}
 /** ===== 유틸: 시간 ===== */
 function parseTimeText(raw) {
 if (!raw) return { ok: false };
