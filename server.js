@@ -73,7 +73,9 @@ template: {
 outputs: [
 {
 simpleText: {
-text: `입력한 날짜: ${parsed.date_ymd}`
+text: `입력하신 날짜는 ${formatKoreanDate(parsed.date_ymd)} 입니다.
+예약 시간을 말씀해주세요.
+(예:08, 9시, 14시 / 1시간 단위로 검색됩니다.)`
 }
 }
 ]
@@ -158,7 +160,7 @@ hour24 = String(t.hour);
 
 const text =
 parse_error === "NONE"
-? `입력한 시간: ${time_hhmm}`
+? `예약 시간은 ${Number(hour24)}시 입니다. 예약 가능 시간 검색 하겠습니다.`
 : parse_error === "OUT_OF_RANGE"
 ? "예약 가능 시간(05:00~14:59) 내로 입력해 주세요."
 : parse_error === "PAST_TIME"
