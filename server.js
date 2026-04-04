@@ -76,7 +76,7 @@ const label = norm === "MEMBER" ? "회원" : "비회원";
 return safe.send(
 replyText(
 `${label}으로 확인했습니다.\n예약자 성함을 입력해주세요.`,
-{ parse_error: "NONE", member_type: norm, member_type_label: label }
+{ parse_error: "NONE", member_type: norm, member_type_label: label,next_ctx: "ctx_name" }
 )
 );
 } catch (err) {
