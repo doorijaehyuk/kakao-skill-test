@@ -73,12 +73,33 @@ replyText(
 
 const label = norm === "MEMBER" ? "회원" : "비회원";
 
-return safe.send(
-replyText(
-`${label}으로 확인했습니다.\n예약자 성함을 입력해주세요.`,
-{ parse_error: "NONE", member_type: norm, member_type_label: label,next_ctx: "ctx_name" }
-)
-);
+return safe.send({
+version: "2.0",
+template: {
+outputs: [
+{
+simpleText: {
+text: `${label}으로 확인했습니다.\n예약자 성함을 입력해주세요.`
+}
+}
+],
+quickReplies: [
+{
+label: "이름 입력",
+action: "block",
+blockId: "여기에_B02_블록ID_입력"
+}
+]
+},
+action: {
+clientExtra: {
+parse_error: "NONE",
+member_type: norm,
+member_type_label: label,
+next_ctx: "ctx_name"
+}
+}
+});
 } catch (err) {
 console.error("[E01][ERROR]", err);
 return safe.fail("회원 구분 처리 중 오류가 발생했습니다.", {
@@ -87,6 +108,7 @@ member_type: ""
 });
 }
 });
+
 
 /** E02: 이름 입력 */
 app.post("/e02_name", (req, res) => {
