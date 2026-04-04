@@ -88,14 +88,72 @@ member_type: ""
 }
 });
 
+/** E02: 이름 입력 */
+app.post("/e02_name", (req, res) => {
+const safe = withTimeoutGuard(res);
+
+try {
+const body = req.body || {};
+const action = body.action || {};
+const params = action.params || {};
+const detailParams = action.detailParams || {};
+const utterance = String(body?.userRequest?.utterance || "").trim();
+
+const rawName = String(
+params.customer_name ||
+detailParams?.customer_name?.origin ||
+utterance ||
+""
+).trim();
+
+const name = normalizeName(rawName);
+
+if (!name || name.length < 2) {
+return safe.send(
+replyText(
+"성함을 다시 입력해주세요. (예: 홍길동)",
+{ parse_error: "NAME_INVALID", customer_name: "" }
+)
+);
+}
+
+return safe.send(
+replyText(
+`${name}님으로 확인했습니다.\n휴대폰번호를 입력해주세요. (예: 01012345678)`,
+{ parse_error: "NONE", customer_name: name }
+)
+);
+} catch (err) {
+console.error("[E02][ERROR]", err);
+return safe.fail("이름 처리 중 오류가 발생했습니다.", {
+parse_error: "NAME_ERROR",
+customer_name: ""
+});
+}
+});
+
+/* ===== utils ===== */
+
 function normalizeMemberType(text) {
 const t = String(text || "").replace(/\s+/g, "");
 
-// "비회원"에 "회원"이 포함되므로 비회원을 먼저 검사
+// "비회원"에 "회원" 포함되므로 비회원 먼저 검사
 if (/비회원|일반|guest|nonmember|non-member/i.test(t)) return "NON_MEMBER";
 if (/회원|member/i.test(t)) return "MEMBER";
 
 return "UNKNOWN";
+}
+
+function normalizeName(text) {
+let t = String(text || "").trim();
+
+// 앞뒤 문구 제거
+t = t.replace(/(이름은|제 이름은|저는|입니다|이에요|예요)/g, "").trim();
+
+// 한글/영문/공백만 허용
+t = t.replace(/[^가-힣a-zA-Z\s]/g, "").replace(/\s+/g, " ").trim();
+
+return t;
 }
 
 const port = process.env.PORT || 3000;
