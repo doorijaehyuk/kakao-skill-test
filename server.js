@@ -11,34 +11,17 @@ const PORT = process.env.PORT || 3000;
 const BLOCK_ID_RESERVATION_START = '69cdd92b1ccc360c0ff51c39'; // B01_예약시작
 const BLOCK_ID_MEMBER_PHONE_INPUT = '69d1abb31361c36188274b8a'; // B02M_회원휴대폰입력
 const BLOCK_ID_GUEST_NAME_INPUT = '69d1abc804c4b27460071bcc'; // B02N_비회원이름입력
+const BLOCK_ID_MEMBER_SELECT = '69d1bb5ebdaf9c4b9af72dfc'; // B03M_회원조회결과확인 (재사용)
 
 /**
  * 블록명 상수
- * fallback 재질문 용도
- * 실제 관리자센터 블록명과 정확히 같아야 함
+ * 실제 관리자센터 블록명과 정확히 같아야 fallback 재질문이 동작함
  */
 const BLOCK_NAME_MEMBER_PHONE_INPUT = 'B02M_회원휴대폰입력';
 const BLOCK_NAME_GUEST_NAME_INPUT = 'B02N_비회원이름입력';
 const BLOCK_NAME_GUEST_PHONE_INPUT = 'B03N_비회원휴대폰입력';
-const BLOCK_NAME_RESERVATION_DATETIME_INPUT = 'B04_예약일입력'; // 실제 블록명을 바꿨다면 여기 같이 수정
-
-/**
- * 테스트용 샘플 회원 DB
- */
-const SAMPLE_MEMBERS = [
-  {
-    phone: '01012345678',
-    name: '홍길동',
-    memberNo: 'M0001',
-    status: 'ACTIVE',
-  },
-  {
-    phone: '01098765432',
-    name: '김철수',
-    memberNo: 'M0002',
-    status: 'ACTIVE',
-  },
-];
+const BLOCK_NAME_MEMBER_SELECT = 'B03M_회원조회결과확인'; // 필요 시 관리자센터 블록명과 동일하게 수정
+const BLOCK_NAME_RESERVATION_DATETIME_INPUT = 'B04_예약일입력'; // 실제 블록명 다르면 수정
 
 /**
  * 사용자별 예약 세션
@@ -90,6 +73,10 @@ function getDetailParamValue(body, key) {
   return dp.value ?? dp.resolved ?? dp.origin ?? '';
 }
 
+function getClientExtra(body) {
+  return body?.action?.clientExtra || {};
+}
+
 function getRequestId(req) {
   return req.get('X-Request-Id') || '';
 }
@@ -115,6 +102,9 @@ function getBookingSession(userKey) {
       reservationTime: '',
       reservationDateTime: '',
       reservationTimeZone: '',
+      candidateTimes: [],
+      memberCandidates: [],
+      selectedMember: null,
       updatedAt: Date.now(),
     });
   }
@@ -140,6 +130,15 @@ function qrMessage(label, messageText) {
     label,
     action: 'message',
     messageText,
+  };
+}
+
+function qrBlock(label, blockId, extra = {}) {
+  return {
+    label,
+    action: 'block',
+    blockId,
+    extra,
   };
 }
 
@@ -209,15 +208,14 @@ function splitDateTimeParts(dateTimeValue) {
     };
   }
 
-  const normalized = String(dateTimeValue).trim();
+  const normalized = String(dateTimeValue).trim().replace(' ', 'T');
+  const parts = normalized.split('T');
 
-  // 2026-04-11T07:00:00 / 2026-04-11 07:00 / 2026-04-11T07:00
-  const tSplit = normalized.replace(' ', 'T').split('T');
-
-  if (tSplit.length >= 2) {
-    const date = tSplit[0];
-    const timeRaw = tSplit[1];
+  if (parts.length >= 2) {
+    const date = parts[0];
+    const timeRaw = parts[1];
     const time = timeRaw.slice(0, 5);
+
     return {
       date,
       time,
@@ -232,73 +230,282 @@ function splitDateTimeParts(dateTimeValue) {
   };
 }
 
-/**
- * 실제 회원조회
- * OPENCLAW_MEMBER_LOOKUP_URL 환경변수가 있으면 외부 API 우선 호출
- * 없으면 샘플 DB 사용
- */
-async function lookupMemberByPhone(phone, requestId = '') {
-  const normalized = normalizePhone(phone);
+function compactMemberTypeLabel(label) {
+  const source = String(label || '').trim();
+  if (!source) return '회원';
+  if (source.includes('공식')) return '공식';
+  if (source.includes('웹')) return '웹';
+  return source.slice(0, 4);
+}
 
-  if (!isValidMobile(normalized)) {
-    return {
-      found: false,
-      reason: 'INVALID_PHONE',
-      phone: normalized,
-    };
+/**
+ * OpenClaw /v1/responses 호출부
+ * 환경변수:
+ * OPENCLAW_BASE_URL=http://127.0.0.1:18789
+ * OPENCLAW_TOKEN=...
+ * OPENCLAW_MODEL=openclaw/default
+ */
+function getOpenClawConfig() {
+  return {
+    baseUrl: (process.env.OPENCLAW_BASE_URL || 'http://127.0.0.1:18789').replace(/\/$/, ''),
+    token: process.env.OPENCLAW_TOKEN || '',
+    model: process.env.OPENCLAW_MODEL || 'openclaw/default',
+  };
+}
+
+async function callOpenClawResponses({ user, instructions, input, maxOutputTokens = 1500 }) {
+  const cfg = getOpenClawConfig();
+
+  const headers = {
+    'Content-Type': 'application/json',
+  };
+
+  if (cfg.token) {
+    headers.Authorization = `Bearer ${cfg.token}`;
   }
 
-  const remoteUrl = process.env.OPENCLAW_MEMBER_LOOKUP_URL;
-  const apiKey = process.env.OPENCLAW_API_KEY || '';
+  const resp = await fetch(`${cfg.baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      model: cfg.model,
+      user,
+      instructions,
+      input,
+      max_output_tokens: maxOutputTokens,
+    }),
+  });
 
-  if (remoteUrl) {
-    const resp = await fetch(remoteUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(requestId ? { 'X-Request-Id': requestId } : {}),
-        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
-      },
-      body: JSON.stringify({
-        member_type: 'member',
-        member_phone: normalized,
-      }),
-    });
+  const text = await resp.text();
 
-    if (!resp.ok) {
-      throw new Error(`Remote lookup failed: ${resp.status}`);
+  if (!resp.ok) {
+    throw new Error(`OpenClaw /v1/responses failed: ${resp.status} ${text}`);
+  }
+
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch (e) {
+    throw new Error(`OpenClaw response was not valid JSON: ${text}`);
+  }
+
+  return data;
+}
+
+function extractResponsesText(responseJson) {
+  if (typeof responseJson?.output_text === 'string' && responseJson.output_text.trim()) {
+    return responseJson.output_text.trim();
+  }
+
+  if (Array.isArray(responseJson?.output)) {
+    const chunks = [];
+
+    for (const item of responseJson.output) {
+      if (Array.isArray(item?.content)) {
+        for (const part of item.content) {
+          if (typeof part?.text === 'string' && part.text.trim()) {
+            chunks.push(part.text.trim());
+          }
+          if (typeof part?.output_text === 'string' && part.output_text.trim()) {
+            chunks.push(part.output_text.trim());
+          }
+        }
+      }
     }
 
-    const data = await resp.json();
+    if (chunks.length > 0) {
+      return chunks.join('\n');
+    }
+  }
 
-    return {
-      found: !!data.found,
-      name: data.name || '',
-      memberNo: data.memberNo || '',
-      status: data.status || '',
-      phone: normalized,
-      reason: data.reason || (data.found ? '' : 'NOT_FOUND'),
+  return '';
+}
+
+function parseJsonOnlyText(text) {
+  if (!text) {
+    throw new Error('OpenClaw returned empty text');
+  }
+
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const raw = fenced ? fenced[1].trim() : text.trim();
+
+  return JSON.parse(raw);
+}
+
+function buildSearchSlotsInstructions() {
+  return [
+    'You are golf_reservation_operator.',
+    'Return JSON only. No prose. No markdown unless unavoidable.',
+    'Follow the website order, not the chat order.',
+    'Website order is:',
+    '1) confirm admin login or login first',
+    '2) open reservation page',
+    '3) select reservation date/time first',
+    '4) search available slots around anchorTime within the given window',
+    '5) only after date/time context exists, search by phone (and name if needed by the page)',
+    '6) collect member search results',
+    '7) do not click final booking confirmation',
+    '8) return structured JSON only',
+    'If multiple member records match the same phone, return all of them in memberCandidates and set memberStatus="multiple_match".',
+    'If exactly one record matches, set memberStatus="single_match" and selectedMember to that record.',
+    'If none matches, set memberStatus="not_found".',
+    'Output schema exactly:',
+    '{"ok":true,"memberStatus":"single_match","memberCandidates":[{"memberKey":"official:qwer","memberTypeLabel":"공식정회원","loginId":"qwer","name":"홍길동","phone":"01012345678"}],"selectedMember":{"memberKey":"official:qwer","memberTypeLabel":"공식정회원","loginId":"qwer","name":"홍길동","phone":"01012345678"},"candidates":["09:05","09:12"],"reason":"","notes":""}',
+  ].join('\n');
+}
+
+function buildSearchSlotsInput({
+  memberType,
+  name,
+  phone,
+  date,
+  anchorTime,
+  windowMinutes = 30,
+}) {
+  return [
+    'mode=search_slots',
+    `memberType=${memberType || ''}`,
+    `name=${name || ''}`,
+    `phone=${phone || ''}`,
+    `date=${date || ''}`,
+    `anchorTime=${anchorTime || ''}`,
+    `windowMinutes=${windowMinutes}`,
+  ].join('\n');
+}
+
+function normalizeSearchSlotsResult(parsed) {
+  const candidates = Array.isArray(parsed?.candidates)
+    ? parsed.candidates.map((v) => String(v).trim()).filter(Boolean)
+    : [];
+
+  const memberCandidates = Array.isArray(parsed?.memberCandidates)
+    ? parsed.memberCandidates.map((row, idx) => ({
+        memberKey: String(row?.memberKey || `candidate:${idx + 1}`),
+        memberTypeLabel: String(row?.memberTypeLabel || ''),
+        loginId: String(row?.loginId || ''),
+        name: String(row?.name || ''),
+        phone: normalizePhone(row?.phone || ''),
+      }))
+    : [];
+
+  let selectedMember = null;
+  if (parsed?.selectedMember && typeof parsed.selectedMember === 'object') {
+    selectedMember = {
+      memberKey: String(parsed.selectedMember.memberKey || ''),
+      memberTypeLabel: String(parsed.selectedMember.memberTypeLabel || ''),
+      loginId: String(parsed.selectedMember.loginId || ''),
+      name: String(parsed.selectedMember.name || ''),
+      phone: normalizePhone(parsed.selectedMember.phone || ''),
     };
   }
 
-  const member = SAMPLE_MEMBERS.find((m) => m.phone === normalized);
+  let memberStatus = String(parsed?.memberStatus || '').trim();
 
-  if (!member) {
-    return {
-      found: false,
-      reason: 'NOT_FOUND',
-      phone: normalized,
-    };
+  if (!memberStatus) {
+    if (memberCandidates.length > 1) {
+      memberStatus = 'multiple_match';
+    } else if (memberCandidates.length === 1) {
+      memberStatus = 'single_match';
+    } else {
+      memberStatus = 'not_found';
+    }
+  }
+
+  if (!selectedMember && memberStatus === 'single_match' && memberCandidates.length === 1) {
+    selectedMember = memberCandidates[0];
   }
 
   return {
-    found: true,
-    name: member.name,
-    memberNo: member.memberNo,
-    status: member.status,
-    phone: normalized,
-    reason: '',
+    ok: !!parsed?.ok,
+    memberStatus,
+    memberCandidates,
+    selectedMember,
+    candidates,
+    reason: String(parsed?.reason || ''),
+    notes: String(parsed?.notes || ''),
+    raw: parsed,
   };
+}
+
+async function openClawSearchSlots({
+  sessionKey,
+  memberType,
+  name,
+  phone,
+  date,
+  anchorTime,
+  windowMinutes = 30,
+}) {
+  const responseJson = await callOpenClawResponses({
+    user: sessionKey,
+    instructions: buildSearchSlotsInstructions(),
+    input: buildSearchSlotsInput({
+      memberType,
+      name,
+      phone,
+      date,
+      anchorTime,
+      windowMinutes,
+    }),
+    maxOutputTokens: 1500,
+  });
+
+  const text = extractResponsesText(responseJson);
+  const parsed = parseJsonOnlyText(text);
+
+  return normalizeSearchSlotsResult(parsed);
+}
+
+function buildCandidateLines(candidateTimes, max = 8) {
+  return candidateTimes
+    .slice(0, max)
+    .map((time, idx) => `${idx + 1}. ${time}`)
+    .join('\n');
+}
+
+function buildCandidateTimeQuickReplies(candidateTimes) {
+  const quickReplies = candidateTimes
+    .slice(0, 5)
+    .map((time) => qrMessage(time, `후보시간선택:${time}`));
+
+  quickReplies.push(qrMessage('예약일시 다시 입력', '예약일시다시입력'));
+  quickReplies.push(qrMessage('처음으로', '예약시작'));
+  return quickReplies;
+}
+
+function buildMemberSelectionQuickReplies(memberCandidates) {
+  const quickReplies = memberCandidates
+    .slice(0, 5)
+    .map((candidate, idx) =>
+      qrBlock(`${idx + 1}번 선택`, BLOCK_ID_MEMBER_SELECT, {
+        memberKey: candidate.memberKey,
+      })
+    );
+
+  quickReplies.push(qrMessage('휴대폰 다시 입력', '회원휴대폰다시입력'));
+  quickReplies.push(qrMessage('처음으로', '예약시작'));
+
+  return quickReplies;
+}
+
+function buildMemberSelectionText(memberCandidates, reservationDate, reservationTime) {
+  const lines = memberCandidates
+    .slice(0, 5)
+    .map((row, idx) => {
+      const typeLabel = row.memberTypeLabel || '회원';
+      const loginId = row.loginId || '-';
+      const name = row.name || '-';
+      const phone = row.phone ? formatPhone(row.phone) : '-';
+      return `${idx + 1}. ${typeLabel} / 아이디:${loginId} / 이름:${name} / 휴대폰:${phone}`;
+    })
+    .join('\n');
+
+  return (
+    `같은 휴대폰 번호로 여러 회원이 확인되었습니다.\n` +
+    `기준 예약일시: ${reservationDate} ${reservationTime}\n\n` +
+    `${lines}\n\n` +
+    `예약에 사용할 회원을 선택해 주세요.`
+  );
 }
 
 /**
@@ -384,18 +591,12 @@ app.post('/kakao/skill/debug-block-info', (req, res) => {
 });
 
 /**
- * 회원조회 스킬
- * 성공 시 바로 예약일시 입력 단계로 보냄
+ * 회원 전화번호 입력 단계
+ * 실제 회원확정은 아직 하지 않고 정보만 저장
  */
 app.post('/kakao/skill/member-lookup', async (req, res) => {
-  const requestId = getRequestId(req);
-
   try {
     const userKey = getUserKey(req.body);
-    const memberType =
-      getActionParam(req.body, 'member_type') ||
-      getDetailParamValue(req.body, 'member_type') ||
-      'member';
 
     const memberPhone =
       getActionParam(req.body, 'member_phone') ||
@@ -403,14 +604,6 @@ app.post('/kakao/skill/member-lookup', async (req, res) => {
       '';
 
     const normalizedPhone = normalizePhone(memberPhone);
-
-    console.log('[MEMBER_LOOKUP REQUEST]', JSON.stringify(req.body, null, 2));
-    console.log('[MEMBER_LOOKUP PARAMS]', {
-      userKey,
-      memberType,
-      memberPhone,
-      normalizedPhone,
-    });
 
     if (!normalizedPhone || !isValidMobile(normalizedPhone)) {
       return res.json(
@@ -425,42 +618,25 @@ app.post('/kakao/skill/member-lookup', async (req, res) => {
       );
     }
 
-    const lookup = await lookupMemberByPhone(normalizedPhone, requestId);
-
-    if (lookup.found) {
-      const session = getBookingSession(userKey);
-      session.memberType = 'member';
-      session.name = lookup.name;
-      session.memberNo = lookup.memberNo;
-      session.phone = lookup.phone;
-      session.reservationDate = '';
-      session.reservationTime = '';
-      session.reservationDateTime = '';
-      session.reservationTimeZone = '';
-      session.updatedAt = Date.now();
-
-      return res.json(
-        textResponse(
-          `${lookup.name} 회원님으로 확인되었습니다.\n` +
-          `휴대폰 번호는 ${formatPhone(lookup.phone)} 입니다.\n` +
-          `다음 단계를 선택해 주세요.`,
-          [
-            qrMessage('예약일시 입력', '예약일시입력'),
-            qrMessage('다시 입력', '회원휴대폰다시입력'),
-            qrMessage('비회원으로 진행', '비회원으로진행'),
-            qrMessage('처음으로', '예약시작'),
-          ]
-        )
-      );
-    }
-
-    clearBookingSession(userKey);
+    const session = getBookingSession(userKey);
+    session.memberType = 'member';
+    session.phone = normalizedPhone;
+    session.name = '';
+    session.memberNo = '';
+    session.reservationDate = '';
+    session.reservationTime = '';
+    session.reservationDateTime = '';
+    session.reservationTimeZone = '';
+    session.candidateTimes = [];
+    session.memberCandidates = [];
+    session.selectedMember = null;
+    session.updatedAt = Date.now();
 
     return res.json(
       textResponse(
-        `입력하신 휴대폰 번호(${formatPhone(normalizedPhone)})로 회원 정보를 찾지 못했습니다.\n` +
-        `번호를 다시 입력하시거나 비회원으로 진행해 주세요.`,
+        `회원 예약용 휴대폰 번호를 받았습니다.\n휴대폰: ${formatPhone(normalizedPhone)}\n다음 단계를 선택해 주세요.`,
         [
+          qrMessage('예약일시 입력', '예약일시입력'),
           qrMessage('다시 입력', '회원휴대폰다시입력'),
           qrMessage('비회원으로 진행', '비회원으로진행'),
           qrMessage('처음으로', '예약시작'),
@@ -472,7 +648,7 @@ app.post('/kakao/skill/member-lookup', async (req, res) => {
 
     return res.json(
       textResponse(
-        '회원 확인 중 오류가 발생했습니다.\n잠시 후 다시 시도해 주세요.',
+        '회원 정보 입력 처리 중 오류가 발생했습니다.\n다시 시도해 주세요.',
         [
           qrMessage('다시 입력', '회원휴대폰다시입력'),
           qrMessage('비회원으로 진행', '비회원으로진행'),
@@ -485,7 +661,6 @@ app.post('/kakao/skill/member-lookup', async (req, res) => {
 
 /**
  * 비회원 이름 입력 단계
- * 연결 스킬: guest_name_step
  */
 app.post('/kakao/skill/guest-name-step', (req, res) => {
   try {
@@ -527,6 +702,9 @@ app.post('/kakao/skill/guest-name-step', (req, res) => {
     session.reservationTime = '';
     session.reservationDateTime = '';
     session.reservationTimeZone = '';
+    session.candidateTimes = [];
+    session.memberCandidates = [];
+    session.selectedMember = null;
     session.updatedAt = Date.now();
 
     return res.json(
@@ -555,7 +733,6 @@ app.post('/kakao/skill/guest-name-step', (req, res) => {
 
 /**
  * 비회원 휴대폰 입력 단계
- * 연결 스킬: guest_phone_step
  */
 app.post('/kakao/skill/guest-phone-step', (req, res) => {
   try {
@@ -633,10 +810,10 @@ app.post('/kakao/skill/guest-phone-step', (req, res) => {
 
 /**
  * 예약일시 입력 단계
- * 연결 스킬: reservation_datetime_step
- * sys.plugin.datetime 사용 전제
+ * sys.plugin.datetime 사용
+ * 여기서 실제 OpenClaw search_slots 호출
  */
-app.post('/kakao/skill/reservation-datetime-step', (req, res) => {
+app.post('/kakao/skill/reservation-datetime-step', async (req, res) => {
   try {
     const userKey = getUserKey(req.body);
     const session = getBookingSession(userKey);
@@ -667,13 +844,20 @@ app.post('/kakao/skill/reservation-datetime-step', (req, res) => {
       session,
     });
 
-    if (!session.memberType || !session.name || !session.phone) {
+    if (!session.memberType || !session.phone) {
       return res.json(
         textResponse(
           '예약자 정보가 없습니다.\n처음부터 다시 진행해 주세요.',
-          [
-            qrMessage('처음으로', '예약시작'),
-          ]
+          [qrMessage('처음으로', '예약시작')]
+        )
+      );
+    }
+
+    if (session.memberType === 'guest' && !session.name) {
+      return res.json(
+        textResponse(
+          '비회원 성함 정보가 없습니다.\n처음부터 다시 진행해 주세요.',
+          [qrMessage('처음으로', '예약시작')]
         )
       );
     }
@@ -696,27 +880,180 @@ app.post('/kakao/skill/reservation-datetime-step', (req, res) => {
     session.reservationTimeZone = userTimeZone;
     session.updatedAt = Date.now();
 
-    const typeText = session.memberType === 'member' ? '회원' : '비회원';
+    const searchResult = await openClawSearchSlots({
+      sessionKey: `booking:${userKey}:${reservationDate}:${reservationTime}`,
+      memberType: session.memberType,
+      name: session.name,
+      phone: session.phone,
+      date: reservationDate,
+      anchorTime: reservationTime,
+      windowMinutes: 30,
+    });
+
+    console.log('[OPENCLAW SEARCH_SLOTS RESULT]', searchResult);
+
+    if (!searchResult.ok) {
+      return res.json(
+        textResponse(
+          `예약 가능 시간 조회에 실패했습니다.\n사유: ${searchResult.reason || 'UNKNOWN'}\n다시 시도해 주세요.`,
+          [
+            qrMessage('예약일시 다시 입력', '예약일시다시입력'),
+            qrMessage('처음으로', '예약시작'),
+          ]
+        )
+      );
+    }
+
+    session.memberCandidates = searchResult.memberCandidates || [];
+    session.selectedMember = searchResult.selectedMember || null;
+    session.candidateTimes = searchResult.candidates || [];
+    session.updatedAt = Date.now();
+
+    if (!session.candidateTimes || session.candidateTimes.length === 0) {
+      return res.json(
+        textResponse(
+          `선택하신 ${reservationDate} ${reservationTime} 기준 ±30분 내 예약 가능한 시간이 없습니다.\n다른 예약일시로 다시 시도해 주세요.`,
+          [
+            qrMessage('예약일시 다시 입력', '예약일시다시입력'),
+            qrMessage('처음으로', '예약시작'),
+          ]
+        )
+      );
+    }
+
+    if (session.memberType === 'member') {
+      if (searchResult.memberStatus === 'not_found') {
+        clearBookingSession(userKey);
+        return res.json(
+          textResponse(
+            `입력한 휴대폰 번호로 회원을 찾지 못했습니다.\n휴대폰 번호를 다시 확인해 주세요.`,
+            [
+              qrMessage('회원휴대폰다시입력', '회원휴대폰다시입력'),
+              qrMessage('비회원으로진행', '비회원으로진행'),
+              qrMessage('처음으로', '예약시작'),
+            ]
+          )
+        );
+      }
+
+      if (searchResult.memberStatus === 'multiple_match') {
+        return res.json(
+          textResponse(
+            buildMemberSelectionText(session.memberCandidates, reservationDate, reservationTime),
+            buildMemberSelectionQuickReplies(session.memberCandidates)
+          )
+        );
+      }
+
+      if (searchResult.memberStatus === 'single_match' && session.selectedMember) {
+        session.name = session.selectedMember.name || session.name;
+        session.phone = normalizePhone(session.selectedMember.phone || session.phone);
+        session.updatedAt = Date.now();
+
+        const candidateLines = buildCandidateLines(session.candidateTimes);
+
+        return res.json(
+          textResponse(
+            `회원 확인 완료\n선택 회원: ${session.selectedMember.memberTypeLabel || '회원'} / ${session.selectedMember.loginId || '-'} / ${session.selectedMember.name || '-'}\n` +
+            `예약일시 기준 후보 시간입니다.\n기준: ${reservationDate} ${reservationTime} (±30분)\n\n${candidateLines}\n\n원하시는 시간을 선택해 주세요.`,
+            buildCandidateTimeQuickReplies(session.candidateTimes)
+          )
+        );
+      }
+    }
+
+    const candidateLines = buildCandidateLines(session.candidateTimes);
 
     return res.json(
       textResponse(
-        `${typeText} 예약 정보 확인\n` +
-        `성함: ${session.name}\n` +
-        `휴대폰: ${formatPhone(session.phone)}\n` +
-        `예약일: ${reservationDate}\n` +
-        `희망시간: ${reservationTime}\n` +
-        `다음 단계로 가용 시간 조회 블록을 연결해 주세요.`,
+        `예약 가능 시간 후보입니다.\n기준: ${reservationDate} ${reservationTime} (±30분)\n\n${candidateLines}\n\n원하시는 시간을 선택해 주세요.`,
+        buildCandidateTimeQuickReplies(session.candidateTimes)
+      )
+    );
+  } catch (error) {
+    console.error('[RESERVATION_DATETIME_STEP ERROR]', error);
+
+    return res.json(
+      textResponse(
+        '예약 가능 시간 조회 중 오류가 발생했습니다.\n다시 시도해 주세요.',
         [
           qrMessage('예약일시 다시 입력', '예약일시다시입력'),
           qrMessage('처음으로', '예약시작'),
         ]
       )
     );
-  } catch (error) {
-    console.error('[RESERVATION_DATETIME_STEP ERROR]', error);
+  }
+});
+
+/**
+ * 다건 회원 선택 단계
+ * B03M 블록에 연결
+ * action.clientExtra.memberKey 사용
+ */
+app.post('/kakao/skill/member-select-step', async (req, res) => {
+  try {
+    const userKey = getUserKey(req.body);
+    const session = getBookingSession(userKey);
+    const clientExtra = getClientExtra(req.body);
+    const memberKey = String(clientExtra?.memberKey || '').trim();
+
+    console.log('[MEMBER_SELECT_STEP REQUEST]', JSON.stringify(req.body, null, 2));
+    console.log('[MEMBER_SELECT_STEP CLIENT_EXTRA]', clientExtra);
+    console.log('[MEMBER_SELECT_STEP SESSION]', session);
+
+    if (!session.memberCandidates || session.memberCandidates.length === 0) {
+      return res.json(
+        textResponse(
+          '선택할 회원 목록 정보가 없습니다.\n예약일시부터 다시 진행해 주세요.',
+          [
+            qrMessage('예약일시 다시 입력', '예약일시다시입력'),
+            qrMessage('처음으로', '예약시작'),
+          ]
+        )
+      );
+    }
+
+    if (!memberKey) {
+      return res.json(
+        textResponse(
+          '버튼으로 회원을 선택해 주세요.',
+          buildMemberSelectionQuickReplies(session.memberCandidates)
+        )
+      );
+    }
+
+    const selected = session.memberCandidates.find((row) => row.memberKey === memberKey);
+
+    if (!selected) {
+      return res.json(
+        textResponse(
+          '선택한 회원 정보를 찾지 못했습니다.\n다시 선택해 주세요.',
+          buildMemberSelectionQuickReplies(session.memberCandidates)
+        )
+      );
+    }
+
+    session.selectedMember = selected;
+    session.name = selected.name || session.name;
+    session.phone = normalizePhone(selected.phone || session.phone);
+    session.updatedAt = Date.now();
+
+    const candidateLines = buildCandidateLines(session.candidateTimes);
+
     return res.json(
       textResponse(
-        '예약일시 확인 중 오류가 발생했습니다.\n다시 시도해 주세요.',
+        `선택 회원 확인\n${selected.memberTypeLabel || '회원'} / ${selected.loginId || '-'} / ${selected.name || '-'}\n` +
+        `휴대폰: ${selected.phone ? formatPhone(selected.phone) : '-'}\n\n` +
+        `예약 가능 시간 후보입니다.\n기준: ${session.reservationDate} ${session.reservationTime} (±30분)\n\n${candidateLines}\n\n원하시는 시간을 선택해 주세요.`,
+        buildCandidateTimeQuickReplies(session.candidateTimes)
+      )
+    );
+  } catch (error) {
+    console.error('[MEMBER_SELECT_STEP ERROR]', error);
+
+    return res.json(
+      textResponse(
+        '회원 선택 처리 중 오류가 발생했습니다.\n다시 시도해 주세요.',
         [
           qrMessage('예약일시 다시 입력', '예약일시다시입력'),
           qrMessage('처음으로', '예약시작'),
@@ -728,11 +1065,13 @@ app.post('/kakao/skill/reservation-datetime-step', (req, res) => {
 
 /**
  * 폴백 라우터 스킬
- * 버튼 단계에서 임의 텍스트 입력 시 같은 질문 재노출
  */
 app.post('/kakao/skill/fallback-router', (req, res) => {
   try {
     console.log('[FALLBACK_ROUTER REQUEST]', JSON.stringify(req.body, null, 2));
+
+    const userKey = getUserKey(req.body);
+    const session = getBookingSession(userKey);
 
     const lastBlockName =
       req.body?.flow?.lastBlock?.name ||
@@ -776,6 +1115,15 @@ app.post('/kakao/skill/fallback-router', (req, res) => {
             qrMessage('휴대폰 다시 입력', '비회원휴대폰다시입력'),
             qrMessage('처음으로', '예약시작'),
           ]
+        )
+      );
+    }
+
+    if (lastBlockName === BLOCK_NAME_MEMBER_SELECT && session.memberCandidates && session.memberCandidates.length > 0) {
+      return res.json(
+        textResponse(
+          buildMemberSelectionText(session.memberCandidates, session.reservationDate, session.reservationTime),
+          buildMemberSelectionQuickReplies(session.memberCandidates)
         )
       );
     }
