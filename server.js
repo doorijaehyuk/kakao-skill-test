@@ -68,15 +68,7 @@ function getRequestId(req) {
   return req.get('X-Request-Id') || '';
 }
 
-function qr(label, messageText) {
-  return {
-    messageText,
-    action: 'message',
-    label,
-  };
-}
-
-function textResponse(text, quickReplies = []) {
+function textResponse(text) {
   return {
     version: '2.0',
     template: {
@@ -87,7 +79,6 @@ function textResponse(text, quickReplies = []) {
           },
         },
       ],
-      quickReplies,
     },
   };
 }
@@ -209,8 +200,8 @@ app.post('/kakao/validate/member-phone', (req, res) => {
 
 /**
  * 회원조회 스킬
- * - quickReplies: message 방식만 사용
- * - data/context: 테스트 단계에서는 제거
+ * - simpleText만 반환
+ * - quickReplies, data, context 제거
  */
 app.post('/kakao/skill/member-lookup', async (req, res) => {
   const requestId = getRequestId(req);
@@ -235,43 +226,27 @@ app.post('/kakao/skill/member-lookup', async (req, res) => {
       normalizedPhone,
     });
 
-    // 1) 번호 형식 오류
     if (!normalizedPhone || !isValidMobile(normalizedPhone)) {
       return res.json(
         textResponse(
-          '휴대폰 번호 형식이 올바르지 않습니다.\n숫자만 다시 입력해 주세요.\n예: 01012345678',
-          [
-            qr('다시 입력', '회원휴대폰다시입력'),
-            qr('비회원으로 진행', '비회원으로진행'),
-          ]
+          '휴대폰 번호 형식이 올바르지 않습니다.\n숫자만 다시 입력해 주세요.\n예: 01012345678'
         )
       );
     }
 
     const lookup = await lookupMemberByPhone(normalizedPhone, requestId);
 
-    // 2) 조회 성공
     if (lookup.found) {
       return res.json(
         textResponse(
-          `${lookup.name} 회원님으로 확인되었습니다.\n휴대폰 번호는 ${formatPhone(lookup.phone)} 입니다.\n맞으시면 아래 버튼을 눌러 주세요.`,
-          [
-            qr('확인', '회원확인완료'),
-            qr('다시 입력', '회원휴대폰다시입력'),
-            qr('비회원으로 진행', '비회원으로진행'),
-          ]
+          `${lookup.name} 회원님으로 확인되었습니다.\n휴대폰 번호는 ${formatPhone(lookup.phone)} 입니다.\n정상 응답 테스트 완료`
         )
       );
     }
 
-    // 3) 조회 실패
     return res.json(
       textResponse(
-        `입력하신 휴대폰 번호(${formatPhone(normalizedPhone)})로 회원 정보를 찾지 못했습니다.\n번호를 다시 입력하시거나 비회원으로 진행해 주세요.`,
-        [
-          qr('다시 입력', '회원휴대폰다시입력'),
-          qr('비회원으로 진행', '비회원으로진행'),
-        ]
+        `입력하신 휴대폰 번호(${formatPhone(normalizedPhone)})로 회원 정보를 찾지 못했습니다.\n번호를 다시 입력하거나 비회원 경로로 진행해 주세요.`
       )
     );
   } catch (error) {
@@ -279,11 +254,7 @@ app.post('/kakao/skill/member-lookup', async (req, res) => {
 
     return res.json(
       textResponse(
-        '회원 확인 중 오류가 발생했습니다.\n잠시 후 다시 시도하시거나 비회원으로 진행해 주세요.',
-        [
-          qr('다시 입력', '회원휴대폰다시입력'),
-          qr('비회원으로 진행', '비회원으로진행'),
-        ]
+        '회원 확인 중 오류가 발생했습니다.\n잠시 후 다시 시도해 주세요.'
       )
     );
   }
