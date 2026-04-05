@@ -285,6 +285,7 @@ app.listen(PORT, () => {
   console.log(`Server listening on port ${PORT}`);
 });
 app.post('/kakao/skill/ping-text-only', (req, res) => {
+  console.log('[PING_TEXT_ONLY REQUEST]', JSON.stringify(req.body, null, 2));
   return res.json({
     version: '2.0',
     template: {
