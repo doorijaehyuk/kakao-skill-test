@@ -11,6 +11,7 @@ const PORT = process.env.PORT || 3000;
 const BLOCK_ID_RESERVATION_START = '69cdd92b1ccc360c0ff51c39'; // B01_예약시작
 const BLOCK_ID_MEMBER_PHONE_INPUT = '69d1abb31361c36188274b8a'; // B02M_회원휴대폰입력
 const BLOCK_ID_GUEST_NAME_INPUT = '69d1abc804c4b27460071bcc'; // B02N_비회원이름입력
+const BLOCK_ID_MEMBER_CONFIRM = '69d1bb5ebdaf9c4b9af72dfc'; // B03M_회원조회결과확인
 
 /**
  * 테스트용 샘플 회원 DB
@@ -230,7 +231,6 @@ app.post('/kakao/validate/member-phone', (req, res) => {
 
 /**
  * 블록 ID 확인용 디버그 스킬
- * - 특정 블록에 임시 연결해서 userRequest.block.id 확인
  */
 app.post('/kakao/skill/debug-block-info', (req, res) => {
   try {
@@ -264,8 +264,7 @@ app.post('/kakao/skill/debug-block-info', (req, res) => {
 /**
  * 회원조회 스킬
  * - 서버가 직접 simpleText + quickReplies 반환
- * - quickReplies는 모두 동일한 block 스키마 사용
- * - 현재 B03M ID가 없으므로 "확인" 버튼은 보류
+ * - quickReplies는 모두 동일한 block 스키마
  */
 app.post('/kakao/skill/member-lookup', async (req, res) => {
   const requestId = getRequestId(req);
@@ -296,7 +295,6 @@ app.post('/kakao/skill/member-lookup', async (req, res) => {
       qrBlock('처음으로', BLOCK_ID_RESERVATION_START, {}),
     ];
 
-    // 1) 번호 형식 오류
     if (!normalizedPhone || !isValidMobile(normalizedPhone)) {
       return res.json(
         textResponse(
@@ -308,19 +306,29 @@ app.post('/kakao/skill/member-lookup', async (req, res) => {
 
     const lookup = await lookupMemberByPhone(normalizedPhone, requestId);
 
-    // 2) 조회 성공
     if (lookup.found) {
+      const successQuickReplies = [
+        qrBlock('확인', BLOCK_ID_MEMBER_CONFIRM, {
+          member_type: memberType || 'member',
+          member_name: lookup.name,
+          member_no: lookup.memberNo,
+          member_phone: lookup.phone,
+        }),
+        qrBlock('다시 입력', BLOCK_ID_MEMBER_PHONE_INPUT, {}),
+        qrBlock('비회원으로 진행', BLOCK_ID_GUEST_NAME_INPUT, {}),
+        qrBlock('처음으로', BLOCK_ID_RESERVATION_START, {}),
+      ];
+
       return res.json(
         textResponse(
           `${lookup.name} 회원님으로 확인되었습니다.\n` +
           `휴대폰 번호는 ${formatPhone(lookup.phone)} 입니다.\n` +
-          `다음 단계 블록 ID 연결 전까지는 아래 버튼으로만 이동해 주세요.`,
-          commonQuickReplies
+          `맞으시면 아래 버튼을 눌러 주세요.`,
+          successQuickReplies
         )
       );
     }
 
-    // 3) 조회 실패
     return res.json(
       textResponse(
         `입력하신 휴대폰 번호(${formatPhone(normalizedPhone)})로 회원 정보를 찾지 못했습니다.\n` +
