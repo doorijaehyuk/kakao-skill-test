@@ -11,7 +11,7 @@ const PORT = process.env.PORT || 3000;
 const BLOCK_ID_RESERVATION_START = '69cdd92b1ccc360c0ff51c39'; // B01_예약시작
 const BLOCK_ID_MEMBER_PHONE_INPUT = '69d1abb31361c36188274b8a'; // B02M_회원휴대폰입력
 const BLOCK_ID_GUEST_NAME_INPUT = '69d1abc804c4b27460071bcc'; // B02N_비회원이름입력
-const BLOCK_ID_MEMBER_SELECT = '69d1bb5ebdaf9c4b9af72dfc'; // B03M_회원조회결과확인 (재사용)
+const BLOCK_ID_MEMBER_SELECT = '69d21379bdaf9c4b9af74da0'; // B03M_회원조회결과확인 (재사용)
 
 /**
  * 블록명 상수
