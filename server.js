@@ -7,18 +7,13 @@ const PORT = process.env.PORT || 3000;
 
 /**
  * 환경변수
- * - OPENCLAW_MEMBER_LOOKUP_URL: OpenClaw 또는 대표님 서버의 회원조회 API URL
+ * - OPENCLAW_MEMBER_LOOKUP_URL: 실제 회원조회 API URL
  * - OPENCLAW_API_KEY: 필요 시 인증키
- *
- * Render 예시:
- * OPENCLAW_MEMBER_LOOKUP_URL=https://your-openclaw-or-api.com/member-lookup
- * OPENCLAW_API_KEY=xxxxx
+ * - KAKAO_BLOCK_ID_MEMBER_CONFIRMED: 회원확인 성공 후 다음 블록 ID
+ * - KAKAO_BLOCK_ID_MEMBER_PHONE_INPUT: 휴대폰 재입력 블록 ID (보통 B02M 자기 자신)
+ * - KAKAO_BLOCK_ID_GUEST_NAME_INPUT: 비회원 이름입력 블록 ID
  */
 
-/**
- * 테스트용 샘플 회원 DB
- * 실제 운영에서는 OPENCLAW_MEMBER_LOOKUP_URL 사용 권장
- */
 const SAMPLE_MEMBERS = [
   {
     phone: '01012345678',
@@ -34,20 +29,9 @@ const SAMPLE_MEMBERS = [
   },
 ];
 
-/**
- * 공통 유틸
- */
 function normalizePhone(raw) {
   if (raw === null || raw === undefined) return '';
-
-  let str = String(raw).trim();
-
-  // 숫자만 남김
-  str = str.replace(/\D/g, '');
-
-  // 한국 휴대폰 일반 형식만 허용: 010xxxxxxxx
-  // 필요 시 011/016/017/018/019까지 허용 확장 가능
-  return str;
+  return String(raw).trim().replace(/\D/g, '');
 }
 
 function isValidMobile(phone) {
@@ -65,21 +49,6 @@ function formatPhone(phone) {
   return p;
 }
 
-/**
- * Kakao validation API body 예:
- * {
- *   "isInSlotFilling": true,
- *   "utterance": "010-1234-5678",
- *   "value": {
- *     "origin": "010-1234-5678",
- *     "resolved": "010-1234-5678"
- *   },
- *   "user": {
- *     "id": "xxx",
- *     "type": "accountId"
- *   }
- * }
- */
 function extractValidationRawValue(body) {
   if (!body || typeof body !== 'object') return '';
   if (body?.value?.resolved) return body.value.resolved;
@@ -88,10 +57,6 @@ function extractValidationRawValue(body) {
   return '';
 }
 
-/**
- * Kakao skill payload 에서 파라미터 안전 추출
- * 문서 예시상 action.params, action.detailParams 구조를 사용
- */
 function getActionParam(body, key) {
   return body?.action?.params?.[key] ?? '';
 }
@@ -99,8 +64,6 @@ function getActionParam(body, key) {
 function getDetailParamValue(body, key) {
   const dp = body?.action?.detailParams?.[key];
   if (!dp) return '';
-
-  // 문서/실전에서 value 또는 resolved 형태가 혼재될 수 있어 둘 다 대응
   return dp.value ?? dp.resolved ?? dp.origin ?? '';
 }
 
@@ -108,8 +71,17 @@ function getRequestId(req) {
   return req.get('X-Request-Id') || '';
 }
 
-function buildSimpleText(text) {
+function buildQuickReplyBlock(label, blockId, extra = {}) {
   return {
+    label,
+    action: 'block',
+    blockId,
+    extra,
+  };
+}
+
+function buildSimpleTextResponse(text, quickReplies = [], data = {}, contextValues = []) {
+  const payload = {
     version: '2.0',
     template: {
       outputs: [
@@ -121,13 +93,24 @@ function buildSimpleText(text) {
       ],
     },
   };
+
+  if (quickReplies.length > 0) {
+    payload.template.quickReplies = quickReplies;
+  }
+
+  if (Object.keys(data).length > 0) {
+    payload.data = data;
+  }
+
+  if (contextValues.length > 0) {
+    payload.context = {
+      values: contextValues,
+    };
+  }
+
+  return payload;
 }
 
-/**
- * OpenClaw 또는 외부 회원조회 API 호출
- * 실제 형식은 대표님 환경마다 다를 수 있으므로,
- * 아래는 표준화용 어댑터입니다.
- */
 async function lookupMemberByPhone(phone, requestId = '') {
   const normalized = normalizePhone(phone);
 
@@ -135,13 +118,13 @@ async function lookupMemberByPhone(phone, requestId = '') {
     return {
       found: false,
       reason: 'INVALID_PHONE',
+      phone: normalized,
     };
   }
 
   const remoteUrl = process.env.OPENCLAW_MEMBER_LOOKUP_URL;
   const apiKey = process.env.OPENCLAW_API_KEY || '';
 
-  // 1) 외부 API가 있으면 우선 사용
   if (remoteUrl) {
     const resp = await fetch(remoteUrl, {
       method: 'POST',
@@ -162,15 +145,6 @@ async function lookupMemberByPhone(phone, requestId = '') {
 
     const data = await resp.json();
 
-    /**
-     * 외부 응답 기대 형태 예:
-     * {
-     *   "found": true,
-     *   "name": "홍길동",
-     *   "memberNo": "M0001",
-     *   "status": "ACTIVE"
-     * }
-     */
     return {
       found: !!data.found,
       name: data.name || '',
@@ -181,7 +155,6 @@ async function lookupMemberByPhone(phone, requestId = '') {
     };
   }
 
-  // 2) 외부 API가 없으면 샘플 DB 사용
   const member = SAMPLE_MEMBERS.find((m) => m.phone === normalized);
 
   if (!member) {
@@ -202,31 +175,10 @@ async function lookupMemberByPhone(phone, requestId = '') {
   };
 }
 
-/**
- * 1) Health check
- */
 app.get('/', (req, res) => {
   res.status(200).send('kakao golf skill server is running');
 });
 
-/**
- * 2) Kakao parameter validation API
- * member_phone 검증/정규화
- *
- * 성공 응답 예:
- * {
- *   "status": "SUCCESS",
- *   "value": "01012345678",
- *   "message": ""
- * }
- *
- * 실패 응답 예:
- * {
- *   "status": "FAIL",
- *   "value": "",
- *   "message": "휴대폰 번호 형식이 올바르지 않습니다. 숫자만 다시 입력해 주세요."
- * }
- */
 app.post('/kakao/validate/member-phone', (req, res) => {
   try {
     const rawValue = extractValidationRawValue(req.body);
@@ -255,9 +207,6 @@ app.post('/kakao/validate/member-phone', (req, res) => {
     });
   } catch (error) {
     console.error('[VALIDATION ERROR]', error);
-
-    // 카카오 문서상 ERROR도 가능하지만,
-    // 운영에서는 사용자에게 다시 입력받게 FAIL 처리하는 편이 안전
     return res.json({
       status: 'FAIL',
       value: '',
@@ -266,25 +215,15 @@ app.post('/kakao/validate/member-phone', (req, res) => {
   }
 });
 
-/**
- * 3) Kakao skill: member_lookup
- *
- * 목적:
- * - B02M_회원휴대폰입력 에서 전달된 member_phone 으로 회원 조회
- * - 결과를 data 및 context 로 반환
- *
- * 반환 구조:
- * - version: 2.0
- * - data: webhook.data.xxx 로 사용 가능
- * - context: 다음 블록에서 ctx_member_lookup 사용 가능
- *
- * 필요 시 이 응답을 기반으로
- * B03M_회원조회결과확인 블록에서
- * {{#webhook.data.memberName}} 회원님 맞으신가요?
- * 처럼 사용
- */
 app.post('/kakao/skill/member-lookup', async (req, res) => {
   const requestId = getRequestId(req);
+
+  const BLOCK_ID_MEMBER_CONFIRMED =
+    process.env.KAKAO_BLOCK_ID_MEMBER_CONFIRMED || '';
+  const BLOCK_ID_MEMBER_PHONE_INPUT =
+    process.env.KAKAO_BLOCK_ID_MEMBER_PHONE_INPUT || '';
+  const BLOCK_ID_GUEST_NAME_INPUT =
+    process.env.KAKAO_BLOCK_ID_GUEST_NAME_INPUT || '';
 
   try {
     const memberType =
@@ -299,53 +238,81 @@ app.post('/kakao/skill/member-lookup', async (req, res) => {
 
     const normalizedPhone = normalizePhone(memberPhone);
 
-    // 방어적 검증
+    console.log('[MEMBER_LOOKUP REQUEST]', JSON.stringify(req.body, null, 2));
+    console.log('[MEMBER_LOOKUP PARAMS]', {
+      memberType,
+      memberPhone,
+      normalizedPhone,
+    });
+
     if (!normalizedPhone || !isValidMobile(normalizedPhone)) {
-      return res.json({
-        version: '2.0',
-        data: {
-          memberType,
-          memberFound: false,
-          memberName: '',
-          memberNo: '',
-          memberPhone: '',
-          displayPhone: '',
-          reason: 'INVALID_PHONE',
-        },
-        context: {
-          values: [
+      return res.json(
+        buildSimpleTextResponse(
+          '휴대폰 번호 형식이 올바르지 않습니다.\n숫자만 다시 입력해 주세요.\n예: 01012345678',
+          [
+            ...(BLOCK_ID_MEMBER_PHONE_INPUT
+              ? [buildQuickReplyBlock('다시 입력', BLOCK_ID_MEMBER_PHONE_INPUT)]
+              : []),
+            ...(BLOCK_ID_GUEST_NAME_INPUT
+              ? [buildQuickReplyBlock('비회원으로 진행', BLOCK_ID_GUEST_NAME_INPUT)]
+              : []),
+          ],
+          {
+            memberType,
+            memberFound: false,
+            reason: 'INVALID_PHONE',
+          },
+          [
             {
               name: 'ctx_member_lookup',
-              lifeSpan: 5,
+              lifeSpan: 3,
               ttl: 300,
               params: {
                 memberFound: 'false',
                 reason: 'INVALID_PHONE',
               },
             },
-          ],
-        },
-      });
+          ]
+        )
+      );
     }
 
     const lookup = await lookupMemberByPhone(normalizedPhone, requestId);
 
-    // 조회 성공
     if (lookup.found) {
-      return res.json({
-        version: '2.0',
-        data: {
-          memberType: memberType || 'member',
-          memberFound: true,
-          memberName: lookup.name,
-          memberNo: lookup.memberNo,
-          memberPhone: lookup.phone,
-          displayPhone: formatPhone(lookup.phone),
-          memberStatus: lookup.status || '',
-          reason: '',
-        },
-        context: {
-          values: [
+      return res.json(
+        buildSimpleTextResponse(
+          `${lookup.name} 회원님으로 확인되었습니다.\n휴대폰 번호는 ${formatPhone(lookup.phone)} 입니다.\n맞으시면 아래 버튼을 눌러 주세요.`,
+          [
+            ...(BLOCK_ID_MEMBER_CONFIRMED
+              ? [
+                  buildQuickReplyBlock('확인', BLOCK_ID_MEMBER_CONFIRMED, {
+                    member_type: memberType || 'member',
+                    member_found: 'true',
+                    member_name: lookup.name,
+                    member_no: lookup.memberNo,
+                    member_phone: lookup.phone,
+                  }),
+                ]
+              : []),
+            ...(BLOCK_ID_MEMBER_PHONE_INPUT
+              ? [buildQuickReplyBlock('다시 입력', BLOCK_ID_MEMBER_PHONE_INPUT)]
+              : []),
+            ...(BLOCK_ID_GUEST_NAME_INPUT
+              ? [buildQuickReplyBlock('비회원으로 진행', BLOCK_ID_GUEST_NAME_INPUT)]
+              : []),
+          ],
+          {
+            memberType: memberType || 'member',
+            memberFound: true,
+            memberName: lookup.name,
+            memberNo: lookup.memberNo,
+            memberPhone: lookup.phone,
+            displayPhone: formatPhone(lookup.phone),
+            memberStatus: lookup.status || '',
+            reason: '',
+          },
+          [
             {
               name: 'ctx_member_lookup',
               lifeSpan: 5,
@@ -360,28 +327,35 @@ app.post('/kakao/skill/member-lookup', async (req, res) => {
                 memberStatus: lookup.status || '',
               },
             },
-          ],
-        },
-      });
+          ]
+        )
+      );
     }
 
-    // 조회 실패
-    return res.json({
-      version: '2.0',
-      data: {
-        memberType: memberType || 'member',
-        memberFound: false,
-        memberName: '',
-        memberNo: '',
-        memberPhone: normalizedPhone,
-        displayPhone: formatPhone(normalizedPhone),
-        reason: lookup.reason || 'NOT_FOUND',
-      },
-      context: {
-        values: [
+    return res.json(
+      buildSimpleTextResponse(
+        `입력하신 휴대폰 번호(${formatPhone(normalizedPhone)})로 회원 정보를 찾지 못했습니다.\n번호를 다시 입력하시거나 비회원으로 진행해 주세요.`,
+        [
+          ...(BLOCK_ID_MEMBER_PHONE_INPUT
+            ? [buildQuickReplyBlock('다시 입력', BLOCK_ID_MEMBER_PHONE_INPUT)]
+            : []),
+          ...(BLOCK_ID_GUEST_NAME_INPUT
+            ? [buildQuickReplyBlock('비회원으로 진행', BLOCK_ID_GUEST_NAME_INPUT)]
+            : []),
+        ],
+        {
+          memberType: memberType || 'member',
+          memberFound: false,
+          memberName: '',
+          memberNo: '',
+          memberPhone: normalizedPhone,
+          displayPhone: formatPhone(normalizedPhone),
+          reason: lookup.reason || 'NOT_FOUND',
+        },
+        [
           {
             name: 'ctx_member_lookup',
-            lifeSpan: 5,
+            lifeSpan: 3,
             ttl: 300,
             params: {
               memberType: memberType || 'member',
@@ -391,21 +365,28 @@ app.post('/kakao/skill/member-lookup', async (req, res) => {
               reason: lookup.reason || 'NOT_FOUND',
             },
           },
-        ],
-      },
-    });
+        ]
+      )
+    );
   } catch (error) {
     console.error('[MEMBER_LOOKUP ERROR]', error);
 
-    // 운영 중 장애가 나더라도 카카오 응답은 JSON으로 유지
-    return res.json({
-      version: '2.0',
-      data: {
-        memberFound: false,
-        reason: 'SERVER_ERROR',
-      },
-      context: {
-        values: [
+    return res.json(
+      buildSimpleTextResponse(
+        '회원 확인 중 오류가 발생했습니다.\n잠시 후 다시 시도하시거나 비회원으로 진행해 주세요.',
+        [
+          ...(process.env.KAKAO_BLOCK_ID_MEMBER_PHONE_INPUT
+            ? [buildQuickReplyBlock('다시 입력', process.env.KAKAO_BLOCK_ID_MEMBER_PHONE_INPUT)]
+            : []),
+          ...(process.env.KAKAO_BLOCK_ID_GUEST_NAME_INPUT
+            ? [buildQuickReplyBlock('비회원으로 진행', process.env.KAKAO_BLOCK_ID_GUEST_NAME_INPUT)]
+            : []),
+        ],
+        {
+          memberFound: false,
+          reason: 'SERVER_ERROR',
+        },
+        [
           {
             name: 'ctx_member_lookup',
             lifeSpan: 1,
@@ -415,15 +396,12 @@ app.post('/kakao/skill/member-lookup', async (req, res) => {
               reason: 'SERVER_ERROR',
             },
           },
-        ],
-      },
-    });
+        ]
+      )
+    );
   }
 });
 
-/**
- * 404
- */
 app.use((req, res) => {
   res.status(404).json({
     ok: false,
@@ -431,9 +409,6 @@ app.use((req, res) => {
   });
 });
 
-/**
- * global error handler
- */
 app.use((err, req, res, next) => {
   console.error('[UNHANDLED ERROR]', err);
   res.status(500).json({
