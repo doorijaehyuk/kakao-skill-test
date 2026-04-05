@@ -211,6 +211,7 @@ app.post('/kakao/skill/member-lookup', async (req, res) => {
       normalizedPhone,
     });
 
+    // 1) 휴대폰 형식 오류
     if (!normalizedPhone || !isValidMobile(normalizedPhone)) {
       return res.json({
         version: '2.0',
@@ -227,41 +228,116 @@ app.post('/kakao/skill/member-lookup', async (req, res) => {
           ],
           quickReplies: [
             {
-              label: '다시 입력',
-              action: 'message',
               messageText: '회원휴대폰다시입력',
-            },
-            {
-              label: '비회원으로 진행',
               action: 'message',
-              messageText: '비회원으로진행',
+              label: '다시 입력',
             },
-          ],
-        },
-        data: {
-          memberType,
-          memberFound: false,
-          memberName: '',
-          memberNo: '',
-          memberPhone: '',
-          displayPhone: '',
-          reason: 'INVALID_PHONE',
-        },
-        context: {
-          values: [
             {
-              name: 'ctx_member_lookup',
-              lifeSpan: 3,
-              ttl: 300,
-              params: {
-                memberFound: 'false',
-                reason: 'INVALID_PHONE',
-              },
+              messageText: '비회원으로진행',
+              action: 'message',
+              label: '비회원으로 진행',
             },
           ],
         },
       });
     }
+
+    const lookup = await lookupMemberByPhone(normalizedPhone, requestId);
+
+    // 2) 조회 성공
+    if (lookup.found) {
+      return res.json({
+        version: '2.0',
+        template: {
+          outputs: [
+            {
+              simpleText: {
+                text:
+                  `${lookup.name} 회원님으로 확인되었습니다.\n` +
+                  `휴대폰 번호는 ${formatPhone(lookup.phone)} 입니다.\n` +
+                  `맞으시면 아래 버튼을 눌러 주세요.`,
+              },
+            },
+          ],
+          quickReplies: [
+            {
+              messageText: '회원확인완료',
+              action: 'message',
+              label: '확인',
+            },
+            {
+              messageText: '회원휴대폰다시입력',
+              action: 'message',
+              label: '다시 입력',
+            },
+            {
+              messageText: '비회원으로진행',
+              action: 'message',
+              label: '비회원으로 진행',
+            },
+          ],
+        },
+      });
+    }
+
+    // 3) 조회 실패
+    return res.json({
+      version: '2.0',
+      template: {
+        outputs: [
+          {
+            simpleText: {
+              text:
+                `입력하신 휴대폰 번호(${formatPhone(normalizedPhone)})로 회원 정보를 찾지 못했습니다.\n` +
+                `번호를 다시 입력하시거나 비회원으로 진행해 주세요.`,
+            },
+          },
+        ],
+        quickReplies: [
+          {
+            messageText: '회원휴대폰다시입력',
+            action: 'message',
+            label: '다시 입력',
+          },
+          {
+            messageText: '비회원으로진행',
+            action: 'message',
+            label: '비회원으로 진행',
+          },
+        ],
+      },
+    });
+  } catch (error) {
+    console.error('[MEMBER_LOOKUP ERROR]', error);
+
+    return res.json({
+      version: '2.0',
+      template: {
+        outputs: [
+          {
+            simpleText: {
+              text:
+                '회원 확인 중 오류가 발생했습니다.\n' +
+                '잠시 후 다시 시도하시거나 비회원으로 진행해 주세요.',
+            },
+          },
+        ],
+        quickReplies: [
+          {
+            messageText: '회원휴대폰다시입력',
+            action: 'message',
+            label: '다시 입력',
+          },
+          {
+            messageText: '비회원으로진행',
+            action: 'message',
+            label: '비회원으로 진행',
+          },
+        ],
+      },
+    });
+  }
+});
 
     const lookup = await lookupMemberByPhone(normalizedPhone, requestId);
 
