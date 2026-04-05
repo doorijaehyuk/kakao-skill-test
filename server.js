@@ -33,6 +33,12 @@ const SAMPLE_MEMBERS = [
 ];
 
 /**
+ * 비회원 임시 세션 저장소
+ * 주의: 메모리 저장이므로 서버 재시작/재배포 시 초기화됨
+ */
+const guestSessions = new Map();
+
+/**
  * 공통 유틸
  */
 function normalizePhone(raw) {
@@ -80,12 +86,55 @@ function getRequestId(req) {
   return req.get('X-Request-Id') || '';
 }
 
+function getUserKey(body) {
+  return (
+    body?.userRequest?.user?.id ||
+    body?.userRequest?.user?.properties?.appUserId ||
+    body?.userRequest?.user?.properties?.botUserKey ||
+    body?.userRequest?.user?.properties?.plusfriendUserKey ||
+    'anonymous'
+  );
+}
+
+function getGuestSession(userKey) {
+  if (!guestSessions.has(userKey)) {
+    guestSessions.set(userKey, {
+      guestName: '',
+      guestPhone: '',
+      updatedAt: Date.now(),
+    });
+  }
+  return guestSessions.get(userKey);
+}
+
+function clearGuestSession(userKey) {
+  guestSessions.delete(userKey);
+}
+
+function sanitizeGuestName(raw) {
+  return String(raw || '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function isValidGuestName(name) {
+  return /^[가-힣a-zA-Z\s·]{2,20}$/.test(name);
+}
+
 function qrBlock(label, blockId, extra = {}) {
   return {
     label,
     action: 'block',
     blockId,
     extra,
+  };
+}
+
+function qrMessage(label, messageText) {
+  return {
+    label,
+    action: 'message',
+    messageText,
   };
 }
 
@@ -346,6 +395,209 @@ app.post('/kakao/skill/member-lookup', async (req, res) => {
           qrBlock('다시 입력', BLOCK_ID_MEMBER_PHONE_INPUT, {}),
           qrBlock('비회원으로 진행', BLOCK_ID_GUEST_NAME_INPUT, {}),
           qrBlock('처음으로', BLOCK_ID_RESERVATION_START, {}),
+        ]
+      )
+    );
+  }
+});
+
+/**
+ * 비회원 이름 입력 단계
+ * 연결 스킬: guest_name_step
+ */
+app.post('/kakao/skill/guest-name-step', (req, res) => {
+  try {
+    const userKey = getUserKey(req.body);
+    const rawName =
+      getActionParam(req.body, 'guest_name') ||
+      getDetailParamValue(req.body, 'guest_name') ||
+      '';
+
+    const guestName = sanitizeGuestName(rawName);
+
+    console.log('[GUEST_NAME_STEP REQUEST]', JSON.stringify(req.body, null, 2));
+    console.log('[GUEST_NAME_STEP PARAMS]', {
+      userKey,
+      rawName,
+      guestName,
+    });
+
+    if (!guestName || !isValidGuestName(guestName)) {
+      clearGuestSession(userKey);
+
+      return res.json(
+        textResponse(
+          '성함은 한글 또는 영문 2~20자로 입력해 주세요.\n예: 홍길동',
+          [
+            qrMessage('이름 다시 입력', '비회원이름재입력'),
+            qrMessage('처음으로', '예약시작'),
+          ]
+        )
+      );
+    }
+
+    const session = getGuestSession(userKey);
+    session.guestName = guestName;
+    session.guestPhone = '';
+    session.updatedAt = Date.now();
+
+    return res.json(
+      textResponse(
+        `${guestName}님, 연락받을 휴대폰 번호를 입력해 주세요.`,
+        [
+          qrMessage('휴대폰 입력', '비회원휴대폰입력'),
+          qrMessage('처음으로', '예약시작'),
+        ]
+      )
+    );
+  } catch (error) {
+    console.error('[GUEST_NAME_STEP ERROR]', error);
+    return res.json(
+      textResponse(
+        '비회원 이름 확인 중 오류가 발생했습니다.\n다시 시도해 주세요.',
+        [
+          qrMessage('이름 다시 입력', '비회원이름재입력'),
+          qrMessage('처음으로', '예약시작'),
+        ]
+      )
+    );
+  }
+});
+
+/**
+ * 비회원 휴대폰 입력 단계
+ * 연결 스킬: guest_phone_step
+ */
+app.post('/kakao/skill/guest-phone-step', (req, res) => {
+  try {
+    const userKey = getUserKey(req.body);
+    const session = getGuestSession(userKey);
+
+    const rawPhone =
+      getActionParam(req.body, 'guest_phone') ||
+      getDetailParamValue(req.body, 'guest_phone') ||
+      '';
+
+    const normalizedPhone = normalizePhone(rawPhone);
+
+    console.log('[GUEST_PHONE_STEP REQUEST]', JSON.stringify(req.body, null, 2));
+    console.log('[GUEST_PHONE_STEP PARAMS]', {
+      userKey,
+      guestName: session.guestName,
+      rawPhone,
+      normalizedPhone,
+    });
+
+    if (!session.guestName) {
+      return res.json(
+        textResponse(
+          '비회원 성함 정보가 없습니다.\n이름부터 다시 입력해 주세요.',
+          [
+            qrMessage('이름 다시 입력', '비회원이름재입력'),
+            qrMessage('처음으로', '예약시작'),
+          ]
+        )
+      );
+    }
+
+    if (!normalizedPhone || !isValidMobile(normalizedPhone)) {
+      return res.json(
+        textResponse(
+          '휴대폰 번호 형식이 올바르지 않습니다.\n숫자만 다시 입력해 주세요.\n예: 01012345678',
+          [
+            qrMessage('휴대폰 다시 입력', '비회원휴대폰다시입력'),
+            qrMessage('처음으로', '예약시작'),
+          ]
+        )
+      );
+    }
+
+    session.guestPhone = normalizedPhone;
+    session.updatedAt = Date.now();
+
+    return res.json(
+      textResponse(
+        `입력하신 비회원 정보입니다.\n성함: ${session.guestName}\n휴대폰: ${formatPhone(session.guestPhone)}\n확인 버튼을 눌러 주세요.`,
+        [
+          qrMessage('정보 확인', '비회원정보확인'),
+          qrMessage('휴대폰 다시 입력', '비회원휴대폰다시입력'),
+          qrMessage('처음으로', '예약시작'),
+        ]
+      )
+    );
+  } catch (error) {
+    console.error('[GUEST_PHONE_STEP ERROR]', error);
+    return res.json(
+      textResponse(
+        '비회원 휴대폰 확인 중 오류가 발생했습니다.\n다시 시도해 주세요.',
+        [
+          qrMessage('휴대폰 다시 입력', '비회원휴대폰다시입력'),
+          qrMessage('처음으로', '예약시작'),
+        ]
+      )
+    );
+  }
+});
+
+/**
+ * 비회원 정보 확인 단계
+ * 연결 스킬: guest_confirm_step
+ */
+app.post('/kakao/skill/guest-confirm-step', (req, res) => {
+  try {
+    const userKey = getUserKey(req.body);
+    const session = getGuestSession(userKey);
+
+    console.log('[GUEST_CONFIRM_STEP REQUEST]', JSON.stringify(req.body, null, 2));
+    console.log('[GUEST_CONFIRM_STEP SESSION]', {
+      userKey,
+      guestName: session.guestName,
+      guestPhone: session.guestPhone,
+    });
+
+    if (!session.guestName) {
+      return res.json(
+        textResponse(
+          '비회원 성함 정보가 없습니다.\n이름부터 다시 입력해 주세요.',
+          [
+            qrMessage('이름 다시 입력', '비회원이름재입력'),
+            qrMessage('처음으로', '예약시작'),
+          ]
+        )
+      );
+    }
+
+    if (!session.guestPhone) {
+      return res.json(
+        textResponse(
+          '비회원 휴대폰 정보가 없습니다.\n휴대폰 번호를 다시 입력해 주세요.',
+          [
+            qrMessage('휴대폰 다시 입력', '비회원휴대폰다시입력'),
+            qrMessage('처음으로', '예약시작'),
+          ]
+        )
+      );
+    }
+
+    return res.json(
+      textResponse(
+        `비회원 예약 정보 확인\n성함: ${session.guestName}\n휴대폰: ${formatPhone(session.guestPhone)}\n정보를 수정하려면 아래 버튼을 눌러 주세요.`,
+        [
+          qrMessage('이름 다시 입력', '비회원이름재입력'),
+          qrMessage('휴대폰 다시 입력', '비회원휴대폰다시입력'),
+          qrMessage('처음으로', '예약시작'),
+        ]
+      )
+    );
+  } catch (error) {
+    console.error('[GUEST_CONFIRM_STEP ERROR]', error);
+    return res.json(
+      textResponse(
+        '비회원 정보 확인 중 오류가 발생했습니다.\n다시 시도해 주세요.',
+        [
+          qrMessage('이름 다시 입력', '비회원이름재입력'),
+          qrMessage('휴대폰 다시 입력', '비회원휴대폰다시입력'),
+          qrMessage('처음으로', '예약시작'),
         ]
       )
     );
