@@ -11,19 +11,21 @@ const PORT = process.env.PORT || 3000;
 const BLOCK_ID_RESERVATION_START = '69cdd92b1ccc360c0ff51c39'; // B01_예약시작
 const BLOCK_ID_MEMBER_PHONE_INPUT = '69d1abb31361c36188274b8a'; // B02M_회원휴대폰입력
 const BLOCK_ID_GUEST_NAME_INPUT = '69d1abc804c4b27460071bcc'; // B02N_비회원이름입력
-const BLOCK_ID_MEMBER_CONFIRM = '69d1bb5ebdaf9c4b9af72dfc'; // B03M_회원조회결과확인
+const BLOCK_ID_MEMBER_CONFIRM = '69d1bb5ebdaf9c4b9af72dfc'; // 현재는 미사용(유지)
 
 /**
  * 블록명 상수
- * 폴백 재질문 라우팅에 사용
+ * fallback 재질문 용도
+ * 실제 관리자센터 블록명과 정확히 같아야 함
  */
 const BLOCK_NAME_MEMBER_PHONE_INPUT = 'B02M_회원휴대폰입력';
 const BLOCK_NAME_GUEST_NAME_INPUT = 'B02N_비회원이름입력';
 const BLOCK_NAME_GUEST_PHONE_INPUT = 'B03N_비회원휴대폰입력';
-const BLOCK_NAME_GUEST_CONFIRM = 'B04N_비회원정보확인';
+const BLOCK_NAME_RESERVATION_DATE_INPUT = 'B04_예약일입력'; // 대표님 실제 블록명과 다르면 수정 필요
 
 /**
  * 테스트용 샘플 회원 DB
+ * 실제 운영에서는 OPENCLAW_MEMBER_LOOKUP_URL 사용 가능
  */
 const SAMPLE_MEMBERS = [
   {
@@ -41,10 +43,10 @@ const SAMPLE_MEMBERS = [
 ];
 
 /**
- * 비회원 임시 세션 저장소
- * 메모리 저장이므로 서버 재시작/재배포 시 초기화됨
+ * 사용자별 예약 세션
+ * 메모리 저장이므로 재배포/재시작 시 초기화됨
  */
-const guestSessions = new Map();
+const bookingSessions = new Map();
 
 /**
  * 공통 유틸
@@ -104,19 +106,22 @@ function getUserKey(body) {
   );
 }
 
-function getGuestSession(userKey) {
-  if (!guestSessions.has(userKey)) {
-    guestSessions.set(userKey, {
-      guestName: '',
-      guestPhone: '',
+function getBookingSession(userKey) {
+  if (!bookingSessions.has(userKey)) {
+    bookingSessions.set(userKey, {
+      memberType: '',
+      name: '',
+      memberNo: '',
+      phone: '',
+      reservationDate: '',
       updatedAt: Date.now(),
     });
   }
-  return guestSessions.get(userKey);
+  return bookingSessions.get(userKey);
 }
 
-function clearGuestSession(userKey) {
-  guestSessions.delete(userKey);
+function clearBookingSession(userKey) {
+  bookingSessions.delete(userKey);
 }
 
 function sanitizeGuestName(raw) {
@@ -127,15 +132,6 @@ function sanitizeGuestName(raw) {
 
 function isValidGuestName(name) {
   return /^[가-힣a-zA-Z\s·]{2,20}$/.test(name);
-}
-
-function qrBlock(label, blockId, extra = {}) {
-  return {
-    label,
-    action: 'block',
-    blockId,
-    extra,
-  };
 }
 
 function qrMessage(label, messageText) {
@@ -320,11 +316,13 @@ app.post('/kakao/skill/debug-block-info', (req, res) => {
 
 /**
  * 회원조회 스킬
+ * 성공 시 바로 예약일 입력 단계로 보냄
  */
 app.post('/kakao/skill/member-lookup', async (req, res) => {
   const requestId = getRequestId(req);
 
   try {
+    const userKey = getUserKey(req.body);
     const memberType =
       getActionParam(req.body, 'member_type') ||
       getDetailParamValue(req.body, 'member_type') ||
@@ -339,22 +337,21 @@ app.post('/kakao/skill/member-lookup', async (req, res) => {
 
     console.log('[MEMBER_LOOKUP REQUEST]', JSON.stringify(req.body, null, 2));
     console.log('[MEMBER_LOOKUP PARAMS]', {
+      userKey,
       memberType,
       memberPhone,
       normalizedPhone,
     });
 
-    const commonQuickReplies = [
-      qrBlock('다시 입력', BLOCK_ID_MEMBER_PHONE_INPUT, {}),
-      qrBlock('비회원으로 진행', BLOCK_ID_GUEST_NAME_INPUT, {}),
-      qrBlock('처음으로', BLOCK_ID_RESERVATION_START, {}),
-    ];
-
     if (!normalizedPhone || !isValidMobile(normalizedPhone)) {
       return res.json(
         textResponse(
           '휴대폰 번호 형식이 올바르지 않습니다.\n숫자만 다시 입력해 주세요.\n예: 01012345678',
-          commonQuickReplies
+          [
+            qrMessage('다시 입력', '회원휴대폰다시입력'),
+            qrMessage('비회원으로 진행', '비회원으로진행'),
+            qrMessage('처음으로', '예약시작'),
+          ]
         )
       );
     }
@@ -362,33 +359,40 @@ app.post('/kakao/skill/member-lookup', async (req, res) => {
     const lookup = await lookupMemberByPhone(normalizedPhone, requestId);
 
     if (lookup.found) {
-      const successQuickReplies = [
-        qrBlock('확인', BLOCK_ID_MEMBER_CONFIRM, {
-          member_type: memberType || 'member',
-          member_name: lookup.name,
-          member_no: lookup.memberNo,
-          member_phone: lookup.phone,
-        }),
-        qrBlock('다시 입력', BLOCK_ID_MEMBER_PHONE_INPUT, {}),
-        qrBlock('비회원으로 진행', BLOCK_ID_GUEST_NAME_INPUT, {}),
-        qrBlock('처음으로', BLOCK_ID_RESERVATION_START, {}),
-      ];
+      const session = getBookingSession(userKey);
+      session.memberType = 'member';
+      session.name = lookup.name;
+      session.memberNo = lookup.memberNo;
+      session.phone = lookup.phone;
+      session.reservationDate = '';
+      session.updatedAt = Date.now();
 
       return res.json(
         textResponse(
           `${lookup.name} 회원님으로 확인되었습니다.\n` +
           `휴대폰 번호는 ${formatPhone(lookup.phone)} 입니다.\n` +
-          `맞으시면 아래 버튼을 눌러 주세요.`,
-          successQuickReplies
+          `다음 단계를 선택해 주세요.`,
+          [
+            qrMessage('예약일 입력', '예약일입력'),
+            qrMessage('다시 입력', '회원휴대폰다시입력'),
+            qrMessage('비회원으로 진행', '비회원으로진행'),
+            qrMessage('처음으로', '예약시작'),
+          ]
         )
       );
     }
 
+    clearBookingSession(userKey);
+
     return res.json(
       textResponse(
         `입력하신 휴대폰 번호(${formatPhone(normalizedPhone)})로 회원 정보를 찾지 못했습니다.\n` +
-          `번호를 다시 입력하시거나 비회원으로 진행해 주세요.`,
-        commonQuickReplies
+        `번호를 다시 입력하시거나 비회원으로 진행해 주세요.`,
+        [
+          qrMessage('다시 입력', '회원휴대폰다시입력'),
+          qrMessage('비회원으로 진행', '비회원으로진행'),
+          qrMessage('처음으로', '예약시작'),
+        ]
       )
     );
   } catch (error) {
@@ -398,9 +402,9 @@ app.post('/kakao/skill/member-lookup', async (req, res) => {
       textResponse(
         '회원 확인 중 오류가 발생했습니다.\n잠시 후 다시 시도해 주세요.',
         [
-          qrBlock('다시 입력', BLOCK_ID_MEMBER_PHONE_INPUT, {}),
-          qrBlock('비회원으로 진행', BLOCK_ID_GUEST_NAME_INPUT, {}),
-          qrBlock('처음으로', BLOCK_ID_RESERVATION_START, {}),
+          qrMessage('다시 입력', '회원휴대폰다시입력'),
+          qrMessage('비회원으로 진행', '비회원으로진행'),
+          qrMessage('처음으로', '예약시작'),
         ]
       )
     );
@@ -429,31 +433,34 @@ app.post('/kakao/skill/guest-name-step', (req, res) => {
     });
 
     if (!guestName || !isValidGuestName(guestName)) {
-      clearGuestSession(userKey);
+      clearBookingSession(userKey);
 
       return res.json(
         textResponse(
           '성함은 한글 또는 영문 2~20자로 입력해 주세요.\n예: 홍길동',
           [
             qrMessage('이름 다시 입력', '비회원이름재입력'),
-            qrBlock('처음으로', BLOCK_ID_RESERVATION_START, {}),
+            qrMessage('처음으로', '예약시작'),
           ]
         )
       );
     }
 
-    const session = getGuestSession(userKey);
-    session.guestName = guestName;
-    session.guestPhone = '';
+    const session = getBookingSession(userKey);
+    session.memberType = 'guest';
+    session.name = guestName;
+    session.memberNo = '';
+    session.phone = '';
+    session.reservationDate = '';
     session.updatedAt = Date.now();
 
     return res.json(
       textResponse(
-        `${guestName}님, 안녕하세요. \n성함이 맞으실 경우 확인 버튼을 눌러주세요.`,
+        `${guestName}님, 다음 단계를 선택해 주세요.`,
         [
-          qrMessage('확인', '비회원휴대폰입력'),
+          qrMessage('휴대폰 입력', '비회원휴대폰입력'),
           qrMessage('다시 입력', '비회원이름재입력'),
-          qrBlock('처음으로', BLOCK_ID_RESERVATION_START, {}),
+          qrMessage('처음으로', '예약시작'),
         ]
       )
     );
@@ -464,7 +471,7 @@ app.post('/kakao/skill/guest-name-step', (req, res) => {
         '비회원 이름 확인 중 오류가 발생했습니다.\n다시 시도해 주세요.',
         [
           qrMessage('이름 다시 입력', '비회원이름재입력'),
-          qrBlock('처음으로', BLOCK_ID_RESERVATION_START, {}),
+          qrMessage('처음으로', '예약시작'),
         ]
       )
     );
@@ -478,7 +485,7 @@ app.post('/kakao/skill/guest-name-step', (req, res) => {
 app.post('/kakao/skill/guest-phone-step', (req, res) => {
   try {
     const userKey = getUserKey(req.body);
-    const session = getGuestSession(userKey);
+    const session = getBookingSession(userKey);
 
     const rawPhone =
       getActionParam(req.body, 'guest_phone') ||
@@ -490,18 +497,18 @@ app.post('/kakao/skill/guest-phone-step', (req, res) => {
     console.log('[GUEST_PHONE_STEP REQUEST]', JSON.stringify(req.body, null, 2));
     console.log('[GUEST_PHONE_STEP PARAMS]', {
       userKey,
-      guestName: session.guestName,
+      guestName: session.name,
       rawPhone,
       normalizedPhone,
     });
 
-    if (!session.guestName) {
+    if (!session.name) {
       return res.json(
         textResponse(
           '비회원 성함 정보가 없습니다.\n이름부터 다시 입력해 주세요.',
           [
             qrMessage('이름 다시 입력', '비회원이름재입력'),
-            qrBlock('처음으로', BLOCK_ID_RESERVATION_START, {}),
+            qrMessage('처음으로', '예약시작'),
           ]
         )
       );
@@ -514,23 +521,23 @@ app.post('/kakao/skill/guest-phone-step', (req, res) => {
           [
             qrMessage('휴대폰 다시 입력', '비회원휴대폰다시입력'),
             qrMessage('이름 다시 입력', '비회원이름재입력'),
-            qrBlock('처음으로', BLOCK_ID_RESERVATION_START, {}),
+            qrMessage('처음으로', '예약시작'),
           ]
         )
       );
     }
 
-    session.guestPhone = normalizedPhone;
+    session.phone = normalizedPhone;
     session.updatedAt = Date.now();
 
     return res.json(
       textResponse(
-        `입력하신 비회원 정보입니다.\n성함: ${session.guestName}\n휴대폰: ${formatPhone(session.guestPhone)}\n입력하신 정보가 맞으실 경우 확인버튼을 눌러주세요.`,
+        `입력하신 비회원 정보입니다.\n성함: ${session.name}\n휴대폰: ${formatPhone(session.phone)}\n다음 단계를 선택해 주세요.`,
         [
-          qrMessage('확인', '비회원정보확인'),
+          qrMessage('예약일 입력', '예약일입력'),
           qrMessage('이름 다시 입력', '비회원이름재입력'),
           qrMessage('휴대폰 다시 입력', '비회원휴대폰다시입력'),
-          qrBlock('처음으로', BLOCK_ID_RESERVATION_START, {}),
+          qrMessage('처음으로', '예약시작'),
         ]
       )
     );
@@ -541,7 +548,8 @@ app.post('/kakao/skill/guest-phone-step', (req, res) => {
         '비회원 휴대폰 확인 중 오류가 발생했습니다.\n다시 시도해 주세요.',
         [
           qrMessage('휴대폰 다시 입력', '비회원휴대폰다시입력'),
-          qrBlock('처음으로', BLOCK_ID_RESERVATION_START, {}),
+          qrMessage('이름 다시 입력', '비회원이름재입력'),
+          qrMessage('처음으로', '예약시작'),
         ]
       )
     );
@@ -549,64 +557,76 @@ app.post('/kakao/skill/guest-phone-step', (req, res) => {
 });
 
 /**
- * 비회원 정보 확인 단계
- * 연결 스킬: guest_confirm_step
+ * 예약일 입력 단계
+ * 연결 스킬: reservation_date_step
+ * sys.plugin.date 사용 전제
  */
-app.post('/kakao/skill/guest-confirm-step', (req, res) => {
+app.post('/kakao/skill/reservation-date-step', (req, res) => {
   try {
     const userKey = getUserKey(req.body);
-    const session = getGuestSession(userKey);
+    const session = getBookingSession(userKey);
 
-    console.log('[GUEST_CONFIRM_STEP REQUEST]', JSON.stringify(req.body, null, 2));
-    console.log('[GUEST_CONFIRM_STEP SESSION]', {
+    const reservationDate =
+      getActionParam(req.body, 'reservation_date') ||
+      getDetailParamValue(req.body, 'reservation_date') ||
+      '';
+
+    console.log('[RESERVATION_DATE_STEP REQUEST]', JSON.stringify(req.body, null, 2));
+    console.log('[RESERVATION_DATE_STEP PARAMS]', {
       userKey,
-      guestName: session.guestName,
-      guestPhone: session.guestPhone,
+      reservationDate,
+      session,
     });
 
-    if (!session.guestName) {
+    if (!session.memberType || !session.name || !session.phone) {
       return res.json(
         textResponse(
-          '비회원 성함 정보가 없습니다.\n이름부터 다시 입력해 주세요.',
+          '예약자 정보가 없습니다.\n처음부터 다시 진행해 주세요.',
           [
-            qrMessage('이름 다시 입력', '비회원이름재입력'),
-            qrBlock('처음으로', BLOCK_ID_RESERVATION_START, {}),
+            qrMessage('처음으로', '예약시작'),
           ]
         )
       );
     }
 
-    if (!session.guestPhone) {
+    if (!reservationDate) {
       return res.json(
         textResponse(
-          '비회원 휴대폰 정보가 없습니다.\n휴대폰 번호를 다시 입력해 주세요.',
+          '예약일을 다시 선택해 주세요.',
           [
-            qrMessage('휴대폰 다시 입력', '비회원휴대폰다시입력'),
-            qrBlock('처음으로', BLOCK_ID_RESERVATION_START, {}),
+            qrMessage('예약일 다시 입력', '예약일다시입력'),
+            qrMessage('처음으로', '예약시작'),
           ]
         )
       );
     }
+
+    session.reservationDate = reservationDate;
+    session.updatedAt = Date.now();
+
+    const typeText = session.memberType === 'member' ? '회원' : '비회원';
 
     return res.json(
       textResponse(
-        `비회원 예약 정보 확인\n성함: ${session.guestName}\n휴대폰: ${formatPhone(session.guestPhone)}\n버튼으로 진행해 주세요.`,
+        `${typeText} 예약 정보 확인\n` +
+        `성함: ${session.name}\n` +
+        `휴대폰: ${formatPhone(session.phone)}\n` +
+        `예약일: ${reservationDate}\n` +
+        `다음 단계로 희망 시간 입력 블록을 연결해 주세요.`,
         [
-          qrMessage('이름 다시 입력', '비회원이름재입력'),
-          qrMessage('휴대폰 다시 입력', '비회원휴대폰다시입력'),
-          qrBlock('처음으로', BLOCK_ID_RESERVATION_START, {}),
+          qrMessage('예약일 다시 입력', '예약일다시입력'),
+          qrMessage('처음으로', '예약시작'),
         ]
       )
     );
   } catch (error) {
-    console.error('[GUEST_CONFIRM_STEP ERROR]', error);
+    console.error('[RESERVATION_DATE_STEP ERROR]', error);
     return res.json(
       textResponse(
-        '비회원 정보 확인 중 오류가 발생했습니다.\n다시 시도해 주세요.',
+        '예약일 확인 중 오류가 발생했습니다.\n다시 시도해 주세요.',
         [
-          qrMessage('이름 다시 입력', '비회원이름재입력'),
-          qrMessage('휴대폰 다시 입력', '비회원휴대폰다시입력'),
-          qrBlock('처음으로', BLOCK_ID_RESERVATION_START, {}),
+          qrMessage('예약일 다시 입력', '예약일다시입력'),
+          qrMessage('처음으로', '예약시작'),
         ]
       )
     );
@@ -615,12 +635,12 @@ app.post('/kakao/skill/guest-confirm-step', (req, res) => {
 
 /**
  * 폴백 라우터 스킬
- * - 버튼 단계에서 사용자가 임의 텍스트를 입력하면
- *   직전 블록을 보고 같은 질문을 다시 보여줌
+ * 버튼 단계에서 임의 텍스트 입력 시 같은 질문 재노출
  *
- * 폴백 블록에 연결:
- * - 응답형식: 스킬데이터로 사용 1개만
- * - 블록 자체 텍스트 응답은 삭제
+ * 폴백 블록 설정:
+ * - 응답형식: 스킬데이터로 사용 1개
+ * - 기존 텍스트 응답 삭제
+ * - 연결 스킬: fallback_router
  */
 app.post('/kakao/skill/fallback-router', (req, res) => {
   try {
@@ -636,10 +656,10 @@ app.post('/kakao/skill/fallback-router', (req, res) => {
         textResponse(
           '직접 입력하지 말고 아래 버튼으로 선택해 주세요.',
           [
-            qrBlock('확인', BLOCK_ID_MEMBER_CONFIRM, {}),
-            qrBlock('다시 입력', BLOCK_ID_MEMBER_PHONE_INPUT, {}),
-            qrBlock('비회원으로 진행', BLOCK_ID_GUEST_NAME_INPUT, {}),
-            qrBlock('처음으로', BLOCK_ID_RESERVATION_START, {}),
+            qrMessage('예약일 입력', '예약일입력'),
+            qrMessage('다시 입력', '회원휴대폰다시입력'),
+            qrMessage('비회원으로 진행', '비회원으로진행'),
+            qrMessage('처음으로', '예약시작'),
           ]
         )
       );
@@ -652,7 +672,7 @@ app.post('/kakao/skill/fallback-router', (req, res) => {
           [
             qrMessage('휴대폰 입력', '비회원휴대폰입력'),
             qrMessage('다시 입력', '비회원이름재입력'),
-            qrBlock('처음으로', BLOCK_ID_RESERVATION_START, {}),
+            qrMessage('처음으로', '예약시작'),
           ]
         )
       );
@@ -663,23 +683,22 @@ app.post('/kakao/skill/fallback-router', (req, res) => {
         textResponse(
           '직접 입력하지 말고 아래 버튼으로 선택해 주세요.',
           [
-            qrMessage('정보 확인', '비회원정보확인'),
-            qrMessage('휴대폰 다시 입력', '비회원휴대폰다시입력'),
+            qrMessage('예약일 입력', '예약일입력'),
             qrMessage('이름 다시 입력', '비회원이름재입력'),
-            qrBlock('처음으로', BLOCK_ID_RESERVATION_START, {}),
+            qrMessage('휴대폰 다시 입력', '비회원휴대폰다시입력'),
+            qrMessage('처음으로', '예약시작'),
           ]
         )
       );
     }
 
-    if (lastBlockName === BLOCK_NAME_GUEST_CONFIRM) {
+    if (lastBlockName === BLOCK_NAME_RESERVATION_DATE_INPUT) {
       return res.json(
         textResponse(
           '직접 입력하지 말고 아래 버튼으로 선택해 주세요.',
           [
-            qrMessage('이름 다시 입력', '비회원이름재입력'),
-            qrMessage('휴대폰 다시 입력', '비회원휴대폰다시입력'),
-            qrBlock('처음으로', BLOCK_ID_RESERVATION_START, {}),
+            qrMessage('예약일 다시 입력', '예약일다시입력'),
+            qrMessage('처음으로', '예약시작'),
           ]
         )
       );
@@ -689,7 +708,7 @@ app.post('/kakao/skill/fallback-router', (req, res) => {
       textResponse(
         '죄송합니다. 이해하지 못했습니다.\n처음으로 돌아가 다시 진행해 주세요.',
         [
-          qrBlock('처음으로', BLOCK_ID_RESERVATION_START, {}),
+          qrMessage('처음으로', '예약시작'),
         ]
       )
     );
@@ -699,7 +718,7 @@ app.post('/kakao/skill/fallback-router', (req, res) => {
       textResponse(
         '처리 중 오류가 발생했습니다.\n처음으로 돌아가 다시 진행해 주세요.',
         [
-          qrBlock('처음으로', BLOCK_ID_RESERVATION_START, {}),
+          qrMessage('처음으로', '예약시작'),
         ]
       )
     );
