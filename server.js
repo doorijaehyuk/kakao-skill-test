@@ -284,3 +284,17 @@ app.use((err, req, res, next) => {
 app.listen(PORT, () => {
   console.log(`Server listening on port ${PORT}`);
 });
+app.post('/kakao/skill/ping-text-only', (req, res) => {
+  return res.json({
+    version: '2.0',
+    template: {
+      outputs: [
+        {
+          simpleText: {
+            text: '핑 테스트 정상 응답',
+          },
+        },
+      ],
+    },
+  });
+});
