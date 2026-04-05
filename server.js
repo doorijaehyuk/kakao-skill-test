@@ -7,7 +7,6 @@ const PORT = process.env.PORT || 3000;
 
 /**
  * 테스트용 샘플 회원 DB
- * 실제 운영에서는 OPENCLAW_MEMBER_LOOKUP_URL 사용 권장
  */
 const SAMPLE_MEMBERS = [
   {
@@ -69,9 +68,33 @@ function getRequestId(req) {
   return req.get('X-Request-Id') || '';
 }
 
+function qr(label, messageText) {
+  return {
+    messageText,
+    action: 'message',
+    label,
+  };
+}
+
+function textResponse(text, quickReplies = []) {
+  return {
+    version: '2.0',
+    template: {
+      outputs: [
+        {
+          simpleText: {
+            text,
+          },
+        },
+      ],
+      quickReplies,
+    },
+  };
+}
+
 /**
  * 실제 회원조회
- * OPENCLAW_MEMBER_LOOKUP_URL 환경변수가 있으면 그쪽 우선 호출
+ * OPENCLAW_MEMBER_LOOKUP_URL 이 있으면 외부 API 우선 호출
  * 없으면 샘플 DB 사용
  */
 async function lookupMemberByPhone(phone, requestId = '') {
@@ -186,7 +209,8 @@ app.post('/kakao/validate/member-phone', (req, res) => {
 
 /**
  * 회원조회 스킬
- * quickReplies는 message 방식
+ * - quickReplies: message 방식만 사용
+ * - data/context: 테스트 단계에서는 제거
  */
 app.post('/kakao/skill/member-lookup', async (req, res) => {
   const requestId = getRequestId(req);
@@ -211,299 +235,63 @@ app.post('/kakao/skill/member-lookup', async (req, res) => {
       normalizedPhone,
     });
 
-    // 1) 휴대폰 형식 오류
+    // 1) 번호 형식 오류
     if (!normalizedPhone || !isValidMobile(normalizedPhone)) {
-      return res.json({
-        version: '2.0',
-        template: {
-          outputs: [
-            {
-              simpleText: {
-                text:
-                  '휴대폰 번호 형식이 올바르지 않습니다.\n' +
-                  '숫자만 다시 입력해 주세요.\n' +
-                  '예: 01012345678',
-              },
-            },
-          ],
-          quickReplies: [
-            {
-              messageText: '회원휴대폰다시입력',
-              action: 'message',
-              label: '다시 입력',
-            },
-            {
-              messageText: '비회원으로진행',
-              action: 'message',
-              label: '비회원으로 진행',
-            },
-          ],
-        },
-      });
+      return res.json(
+        textResponse(
+          '휴대폰 번호 형식이 올바르지 않습니다.\n숫자만 다시 입력해 주세요.\n예: 01012345678',
+          [
+            qr('다시 입력', '회원휴대폰다시입력'),
+            qr('비회원으로 진행', '비회원으로진행'),
+          ]
+        )
+      );
     }
 
     const lookup = await lookupMemberByPhone(normalizedPhone, requestId);
 
     // 2) 조회 성공
     if (lookup.found) {
-      return res.json({
-        version: '2.0',
-        template: {
-          outputs: [
-            {
-              simpleText: {
-                text:
-                  `${lookup.name} 회원님으로 확인되었습니다.\n` +
-                  `휴대폰 번호는 ${formatPhone(lookup.phone)} 입니다.\n` +
-                  `맞으시면 아래 버튼을 눌러 주세요.`,
-              },
-            },
-          ],
-          quickReplies: [
-            {
-              messageText: '회원확인완료',
-              action: 'message',
-              label: '확인',
-            },
-            {
-              messageText: '회원휴대폰다시입력',
-              action: 'message',
-              label: '다시 입력',
-            },
-            {
-              messageText: '비회원으로진행',
-              action: 'message',
-              label: '비회원으로 진행',
-            },
-          ],
-        },
-      });
+      return res.json(
+        textResponse(
+          `${lookup.name} 회원님으로 확인되었습니다.\n휴대폰 번호는 ${formatPhone(lookup.phone)} 입니다.\n맞으시면 아래 버튼을 눌러 주세요.`,
+          [
+            qr('확인', '회원확인완료'),
+            qr('다시 입력', '회원휴대폰다시입력'),
+            qr('비회원으로 진행', '비회원으로진행'),
+          ]
+        )
+      );
     }
 
     // 3) 조회 실패
-    return res.json({
-      version: '2.0',
-      template: {
-        outputs: [
-          {
-            simpleText: {
-              text:
-                `입력하신 휴대폰 번호(${formatPhone(normalizedPhone)})로 회원 정보를 찾지 못했습니다.\n` +
-                `번호를 다시 입력하시거나 비회원으로 진행해 주세요.`,
-            },
-          },
-        ],
-        quickReplies: [
-          {
-            messageText: '회원휴대폰다시입력',
-            action: 'message',
-            label: '다시 입력',
-          },
-          {
-            messageText: '비회원으로진행',
-            action: 'message',
-            label: '비회원으로 진행',
-          },
-        ],
-      },
-    });
+    return res.json(
+      textResponse(
+        `입력하신 휴대폰 번호(${formatPhone(normalizedPhone)})로 회원 정보를 찾지 못했습니다.\n번호를 다시 입력하시거나 비회원으로 진행해 주세요.`,
+        [
+          qr('다시 입력', '회원휴대폰다시입력'),
+          qr('비회원으로 진행', '비회원으로진행'),
+        ]
+      )
+    );
   } catch (error) {
     console.error('[MEMBER_LOOKUP ERROR]', error);
 
-    return res.json({
-      version: '2.0',
-      template: {
-        outputs: [
-          {
-            simpleText: {
-              text:
-                '회원 확인 중 오류가 발생했습니다.\n' +
-                '잠시 후 다시 시도하시거나 비회원으로 진행해 주세요.',
-            },
-          },
-        ],
-        quickReplies: [
-          {
-            messageText: '회원휴대폰다시입력',
-            action: 'message',
-            label: '다시 입력',
-          },
-          {
-            messageText: '비회원으로진행',
-            action: 'message',
-            label: '비회원으로 진행',
-          },
-        ],
-      },
-    });
+    return res.json(
+      textResponse(
+        '회원 확인 중 오류가 발생했습니다.\n잠시 후 다시 시도하시거나 비회원으로 진행해 주세요.',
+        [
+          qr('다시 입력', '회원휴대폰다시입력'),
+          qr('비회원으로 진행', '비회원으로진행'),
+        ]
+      )
+    );
   }
 });
 
-    const lookup = await lookupMemberByPhone(normalizedPhone, requestId);
-
-    if (lookup.found) {
-      return res.json({
-        version: '2.0',
-        template: {
-          outputs: [
-            {
-              simpleText: {
-                text:
-                  `${lookup.name} 회원님으로 확인되었습니다.\n` +
-                  `휴대폰 번호는 ${formatPhone(lookup.phone)} 입니다.\n` +
-                  `맞으시면 아래 버튼을 눌러 주세요.`,
-              },
-            },
-          ],
-          quickReplies: [
-            {
-              label: '확인',
-              action: 'message',
-              messageText: '회원확인완료',
-            },
-            {
-              label: '다시 입력',
-              action: 'message',
-              messageText: '회원휴대폰다시입력',
-            },
-            {
-              label: '비회원으로 진행',
-              action: 'message',
-              messageText: '비회원으로진행',
-            },
-          ],
-        },
-        data: {
-          memberType: memberType || 'member',
-          memberFound: true,
-          memberName: lookup.name,
-          memberNo: lookup.memberNo,
-          memberPhone: lookup.phone,
-          displayPhone: formatPhone(lookup.phone),
-          memberStatus: lookup.status || '',
-          reason: '',
-        },
-        context: {
-          values: [
-            {
-              name: 'ctx_member_lookup',
-              lifeSpan: 5,
-              ttl: 300,
-              params: {
-                memberType: memberType || 'member',
-                memberFound: 'true',
-                memberName: lookup.name,
-                memberNo: lookup.memberNo,
-                memberPhone: lookup.phone,
-                displayPhone: formatPhone(lookup.phone),
-                memberStatus: lookup.status || '',
-              },
-            },
-          ],
-        },
-      });
-    }
-
-    return res.json({
-      version: '2.0',
-      template: {
-        outputs: [
-          {
-            simpleText: {
-              text:
-                `입력하신 휴대폰 번호(${formatPhone(normalizedPhone)})로 회원 정보를 찾지 못했습니다.\n` +
-                `번호를 다시 입력하시거나 비회원으로 진행해 주세요.`,
-            },
-          },
-        ],
-        quickReplies: [
-          {
-            label: '다시 입력',
-            action: 'message',
-            messageText: '회원휴대폰다시입력',
-          },
-          {
-            label: '비회원으로 진행',
-            action: 'message',
-            messageText: '비회원으로진행',
-          },
-        ],
-      },
-      data: {
-        memberType: memberType || 'member',
-        memberFound: false,
-        memberName: '',
-        memberNo: '',
-        memberPhone: normalizedPhone,
-        displayPhone: formatPhone(normalizedPhone),
-        reason: lookup.reason || 'NOT_FOUND',
-      },
-      context: {
-        values: [
-          {
-            name: 'ctx_member_lookup',
-            lifeSpan: 3,
-            ttl: 300,
-            params: {
-              memberType: memberType || 'member',
-              memberFound: 'false',
-              memberPhone: normalizedPhone,
-              displayPhone: formatPhone(normalizedPhone),
-              reason: lookup.reason || 'NOT_FOUND',
-            },
-          },
-        ],
-      },
-    });
-  } catch (error) {
-    console.error('[MEMBER_LOOKUP ERROR]', error);
-
-    return res.json({
-      version: '2.0',
-      template: {
-        outputs: [
-          {
-            simpleText: {
-              text:
-                '회원 확인 중 오류가 발생했습니다.\n' +
-                '잠시 후 다시 시도하시거나 비회원으로 진행해 주세요.',
-            },
-          },
-        ],
-        quickReplies: [
-          {
-            label: '다시 입력',
-            action: 'message',
-            messageText: '회원휴대폰다시입력',
-          },
-          {
-            label: '비회원으로 진행',
-            action: 'message',
-            messageText: '비회원으로진행',
-          },
-        ],
-      },
-      data: {
-        memberFound: false,
-        reason: 'SERVER_ERROR',
-      },
-      context: {
-        values: [
-          {
-            name: 'ctx_member_lookup',
-            lifeSpan: 1,
-            ttl: 60,
-            params: {
-              memberFound: 'false',
-              reason: 'SERVER_ERROR',
-            },
-          },
-        ],
-      },
-    });
-  }
-});
-
+/**
+ * 404
+ */
 app.use((req, res) => {
   res.status(404).json({
     ok: false,
@@ -511,6 +299,9 @@ app.use((req, res) => {
   });
 });
 
+/**
+ * global error handler
+ */
 app.use((err, req, res, next) => {
   console.error('[UNHANDLED ERROR]', err);
   res.status(500).json({
