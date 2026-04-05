@@ -449,9 +449,9 @@ app.post('/kakao/skill/guest-name-step', (req, res) => {
 
     return res.json(
       textResponse(
-        `${guestName}님, 다음 단계를 선택해 주세요.`,
+        `${guestName}님, 안녕하세요. \n성함이 맞으실 경우 확인 버튼을 눌러주세요.`,
         [
-          qrMessage('휴대폰 입력', '비회원휴대폰입력'),
+          qrMessage('확인', '비회원휴대폰입력'),
           qrMessage('다시 입력', '비회원이름재입력'),
           qrBlock('처음으로', BLOCK_ID_RESERVATION_START, {}),
         ]
@@ -525,11 +525,11 @@ app.post('/kakao/skill/guest-phone-step', (req, res) => {
 
     return res.json(
       textResponse(
-        `입력하신 비회원 정보입니다.\n성함: ${session.guestName}\n휴대폰: ${formatPhone(session.guestPhone)}\n다음 단계를 선택해 주세요.`,
+        `입력하신 비회원 정보입니다.\n성함: ${session.guestName}\n휴대폰: ${formatPhone(session.guestPhone)}\n입력하신 정보가 맞으실 경우 확인버튼을 눌러주세요.`,
         [
-          qrMessage('정보 확인', '비회원정보확인'),
-          qrMessage('휴대폰 다시 입력', '비회원휴대폰다시입력'),
+          qrMessage('확인', '비회원정보확인'),
           qrMessage('이름 다시 입력', '비회원이름재입력'),
+          qrMessage('휴대폰 다시 입력', '비회원휴대폰다시입력'),
           qrBlock('처음으로', BLOCK_ID_RESERVATION_START, {}),
         ]
       )
