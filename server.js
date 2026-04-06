@@ -11,7 +11,7 @@ const PORT = process.env.PORT || 3000;
 const BLOCK_ID_RESERVATION_START = '69cdd92b1ccc360c0ff51c39'; // B01_예약시작
 const BLOCK_ID_MEMBER_PHONE_INPUT = '69d1abb31361c36188274b8a'; // B02M_회원휴대폰입력
 const BLOCK_ID_GUEST_NAME_INPUT = '69d1abc804c4b27460071bcc'; // B02N_비회원이름입력
-const BLOCK_ID_MEMBER_SELECT = '69d21379bdaf9c4b9af74da0'; // B03M_회원조회결과확인 (재사용)
+const BLOCK_ID_MEMBER_SELECT = '69d21379bdaf9c4b9af74da0'; // B03M_회원조회결과확인(회원 선택용)
 
 /**
  * 블록명 상수
@@ -20,7 +20,7 @@ const BLOCK_ID_MEMBER_SELECT = '69d21379bdaf9c4b9af74da0'; // B03M_회원조회�
 const BLOCK_NAME_MEMBER_PHONE_INPUT = 'B02M_회원휴대폰입력';
 const BLOCK_NAME_GUEST_NAME_INPUT = 'B02N_비회원이름입력';
 const BLOCK_NAME_GUEST_PHONE_INPUT = 'B03N_비회원휴대폰입력';
-const BLOCK_NAME_MEMBER_SELECT = 'B03M_회원조회결과확인'; // 필요 시 관리자센터 블록명과 동일하게 수정
+const BLOCK_NAME_MEMBER_SELECT = 'B03M_회원조회결과확인';
 const BLOCK_NAME_RESERVATION_DATETIME_INPUT = 'B04_예약일입력'; // 실제 블록명 다르면 수정
 
 /**
@@ -230,14 +230,6 @@ function splitDateTimeParts(dateTimeValue) {
   };
 }
 
-function compactMemberTypeLabel(label) {
-  const source = String(label || '').trim();
-  if (!source) return '회원';
-  if (source.includes('공식')) return '공식';
-  if (source.includes('웹')) return '웹';
-  return source.slice(0, 4);
-}
-
 /**
  * OpenClaw /v1/responses 호출부
  * 환경변수:
@@ -342,13 +334,15 @@ function buildSearchSlotsInstructions() {
     '2) open reservation page',
     '3) select reservation date/time first',
     '4) search available slots around anchorTime within the given window',
-    '5) only after date/time context exists, search by phone (and name if needed by the page)',
+    '5) only after date/time context exists, search by phone (and name if needed)',
     '6) collect member search results',
     '7) do not click final booking confirmation',
     '8) return structured JSON only',
     'If multiple member records match the same phone, return all of them in memberCandidates and set memberStatus="multiple_match".',
+    'If memberStatus is multiple_match, selectedMember must be null.',
     'If exactly one record matches, set memberStatus="single_match" and selectedMember to that record.',
     'If none matches, set memberStatus="not_found".',
+    'If no candidate slot exists, return candidates as [] and do not require member selection.',
     'Output schema exactly:',
     '{"ok":true,"memberStatus":"single_match","memberCandidates":[{"memberKey":"official:qwer","memberTypeLabel":"공식정회원","loginId":"qwer","name":"홍길동","phone":"01012345678"}],"selectedMember":{"memberKey":"official:qwer","memberTypeLabel":"공식정회원","loginId":"qwer","name":"홍길동","phone":"01012345678"},"candidates":["09:05","09:12"],"reason":"","notes":""}',
   ].join('\n');
@@ -373,6 +367,16 @@ function buildSearchSlotsInput({
   ].join('\n');
 }
 
+function isMeaningfulSelectedMember(obj) {
+  if (!obj || typeof obj !== 'object') return false;
+  return Boolean(
+    String(obj.memberKey || '').trim() ||
+    String(obj.loginId || '').trim() ||
+    String(obj.name || '').trim() ||
+    String(obj.phone || '').trim()
+  );
+}
+
 function normalizeSearchSlotsResult(parsed) {
   const candidates = Array.isArray(parsed?.candidates)
     ? parsed.candidates.map((v) => String(v).trim()).filter(Boolean)
@@ -389,7 +393,7 @@ function normalizeSearchSlotsResult(parsed) {
     : [];
 
   let selectedMember = null;
-  if (parsed?.selectedMember && typeof parsed.selectedMember === 'object') {
+  if (isMeaningfulSelectedMember(parsed?.selectedMember)) {
     selectedMember = {
       memberKey: String(parsed.selectedMember.memberKey || ''),
       memberTypeLabel: String(parsed.selectedMember.memberTypeLabel || ''),
@@ -413,6 +417,10 @@ function normalizeSearchSlotsResult(parsed) {
 
   if (!selectedMember && memberStatus === 'single_match' && memberCandidates.length === 1) {
     selectedMember = memberCandidates[0];
+  }
+
+  if (memberStatus === 'multiple_match') {
+    selectedMember = null;
   }
 
   return {
@@ -909,6 +917,10 @@ app.post('/kakao/skill/reservation-datetime-step', async (req, res) => {
     session.candidateTimes = searchResult.candidates || [];
     session.updatedAt = Date.now();
 
+    /**
+     * 중요:
+     * 후보 시간이 없으면 회원 다건 여부보다 먼저 예약일시 재입력으로 보냄
+     */
     if (!session.candidateTimes || session.candidateTimes.length === 0) {
       return res.json(
         textResponse(
@@ -1005,6 +1017,18 @@ app.post('/kakao/skill/member-select-step', async (req, res) => {
       return res.json(
         textResponse(
           '선택할 회원 목록 정보가 없습니다.\n예약일시부터 다시 진행해 주세요.',
+          [
+            qrMessage('예약일시 다시 입력', '예약일시다시입력'),
+            qrMessage('처음으로', '예약시작'),
+          ]
+        )
+      );
+    }
+
+    if (!session.candidateTimes || session.candidateTimes.length === 0) {
+      return res.json(
+        textResponse(
+          '예약 가능한 시간이 없습니다.\n예약일시를 다시 선택해 주세요.',
           [
             qrMessage('예약일시 다시 입력', '예약일시다시입력'),
             qrMessage('처음으로', '예약시작'),
@@ -1120,6 +1144,18 @@ app.post('/kakao/skill/fallback-router', (req, res) => {
     }
 
     if (lastBlockName === BLOCK_NAME_MEMBER_SELECT && session.memberCandidates && session.memberCandidates.length > 0) {
+      if (!session.candidateTimes || session.candidateTimes.length === 0) {
+        return res.json(
+          textResponse(
+            '예약 가능한 시간이 없습니다.\n예약일시를 다시 선택해 주세요.',
+            [
+              qrMessage('예약일시 다시 입력', '예약일시다시입력'),
+              qrMessage('처음으로', '예약시작'),
+            ]
+          )
+        );
+      }
+
       return res.json(
         textResponse(
           buildMemberSelectionText(session.memberCandidates, session.reservationDate, session.reservationTime),
